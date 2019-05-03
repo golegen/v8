@@ -7,7 +7,10 @@
 #include "src/snapshot/snapshot.h"
 
 #include "src/base/platform/platform.h"
+#include "src/counters.h"
+#include "src/memcopy.h"
 #include "src/snapshot/partial-deserializer.h"
+#include "src/snapshot/read-only-deserializer.h"
 #include "src/snapshot/startup-deserializer.h"
 #include "src/version.h"
 
@@ -31,6 +34,8 @@ bool Snapshot::HasContextSnapshot(Isolate* isolate, size_t index) {
 
 bool Snapshot::Initialize(Isolate* isolate) {
   if (!isolate->snapshot_available()) return false;
+  RuntimeCallTimerScope rcs_timer(isolate,
+                                  RuntimeCallCounterId::kDeserializeIsolate);
   base::ElapsedTimer timer;
   if (FLAG_profile_deserialization) timer.Start();
 
@@ -41,10 +46,12 @@ bool Snapshot::Initialize(Isolate* isolate) {
   SnapshotData startup_snapshot_data(startup_data);
   Vector<const byte> read_only_data = ExtractReadOnlyData(blob);
   SnapshotData read_only_snapshot_data(read_only_data);
-  StartupDeserializer deserializer(&startup_snapshot_data,
-                                   &read_only_snapshot_data);
-  deserializer.SetRehashability(ExtractRehashability(blob));
-  bool success = isolate->Init(&deserializer);
+  StartupDeserializer startup_deserializer(&startup_snapshot_data);
+  ReadOnlyDeserializer read_only_deserializer(&read_only_snapshot_data);
+  startup_deserializer.SetRehashability(ExtractRehashability(blob));
+  read_only_deserializer.SetRehashability(ExtractRehashability(blob));
+  bool success =
+      isolate->InitWithSnapshot(&read_only_deserializer, &startup_deserializer);
   if (FLAG_profile_deserialization) {
     double ms = timer.Elapsed().InMillisecondsF();
     int bytes = startup_data.length();
@@ -57,6 +64,8 @@ MaybeHandle<Context> Snapshot::NewContextFromSnapshot(
     Isolate* isolate, Handle<JSGlobalProxy> global_proxy, size_t context_index,
     v8::DeserializeEmbedderFieldsCallback embedder_fields_deserializer) {
   if (!isolate->snapshot_available()) return Handle<Context>();
+  RuntimeCallTimerScope rcs_timer(isolate,
+                                  RuntimeCallCounterId::kDeserializeContext);
   base::ElapsedTimer timer;
   if (FLAG_profile_deserialization) timer.Start();
 
@@ -143,7 +152,7 @@ v8::StartupData Snapshot::CreateSnapshotBlob(
   uint32_t payload_length =
       static_cast<uint32_t>(startup_snapshot->RawData().length());
   CopyBytes(data + payload_offset,
-            reinterpret_cast<const char*>(startup_snapshot->RawData().start()),
+            reinterpret_cast<const char*>(startup_snapshot->RawData().begin()),
             payload_length);
   if (FLAG_profile_deserialization) {
     PrintF("Snapshot blob consists of:\n%10d bytes in %d chunks for startup\n",
@@ -157,7 +166,7 @@ v8::StartupData Snapshot::CreateSnapshotBlob(
   payload_length = read_only_snapshot->RawData().length();
   CopyBytes(
       data + payload_offset,
-      reinterpret_cast<const char*>(read_only_snapshot->RawData().start()),
+      reinterpret_cast<const char*>(read_only_snapshot->RawData().begin()),
       payload_length);
   if (FLAG_profile_deserialization) {
     PrintF("%10d bytes for read-only\n", payload_length);
@@ -171,7 +180,7 @@ v8::StartupData Snapshot::CreateSnapshotBlob(
     payload_length = context_snapshot->RawData().length();
     CopyBytes(
         data + payload_offset,
-        reinterpret_cast<const char*>(context_snapshot->RawData().start()),
+        reinterpret_cast<const char*>(context_snapshot->RawData().begin()),
         payload_length);
     if (FLAG_profile_deserialization) {
       PrintF("%10d bytes in %d chunks for context #%d\n", payload_length,
@@ -221,7 +230,9 @@ uint32_t Snapshot::ExtractContextOffset(const v8::StartupData* data,
 
 bool Snapshot::ExtractRehashability(const v8::StartupData* data) {
   CHECK_LT(kRehashabilityOffset, static_cast<uint32_t>(data->raw_size));
-  return GetHeaderValue(data, kRehashabilityOffset) != 0;
+  uint32_t rehashability = GetHeaderValue(data, kRehashabilityOffset);
+  CHECK_IMPLIES(rehashability != 0, rehashability == 1);
+  return rehashability != 0;
 }
 
 namespace {
@@ -311,7 +322,7 @@ SnapshotData::SnapshotData(const Serializer* serializer) {
   memset(data_, 0, padded_payload_offset);
 
   // Set header values.
-  SetMagicNumber(serializer->isolate());
+  SetMagicNumber();
   SetHeaderValue(kNumReservationsOffset, static_cast<int>(reservations.size()));
   SetHeaderValue(kPayloadLengthOffset, static_cast<int>(payload->size()));
 

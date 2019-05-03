@@ -155,12 +155,11 @@ void Sweeper::StartSweeping() {
       heap_->mark_compact_collector()->non_atomic_marking_state();
   ForAllSweepingSpaces([this, marking_state](AllocationSpace space) {
     int space_index = GetSweepSpaceIndex(space);
-    std::sort(sweeping_list_[space_index].begin(),
-              sweeping_list_[space_index].end(),
-              [marking_state](Page* a, Page* b) {
-                return marking_state->live_bytes(a) <
-                       marking_state->live_bytes(b);
-              });
+    std::sort(
+        sweeping_list_[space_index].begin(), sweeping_list_[space_index].end(),
+        [marking_state](Page* a, Page* b) {
+          return marking_state->live_bytes(a) > marking_state->live_bytes(b);
+        });
   });
 }
 
@@ -250,6 +249,8 @@ int Sweeper::RawSweep(Page* p, FreeListRebuildingMode free_list_mode,
          space->identity() == CODE_SPACE || space->identity() == MAP_SPACE);
   DCHECK(!p->IsEvacuationCandidate() && !p->SweepingDone());
 
+  bool is_code_page = space->identity() == CODE_SPACE;
+
   // TODO(ulan): we don't have to clear type old-to-old slots in code space
   // because the concurrent marker doesn't mark code objects. This requires
   // the write barrier for code objects to check the color of the code object.
@@ -275,18 +276,22 @@ int Sweeper::RawSweep(Page* p, FreeListRebuildingMode free_list_mode,
     skip_list->Clear();
   }
 
+  if (is_code_page) p->CreateSwapCodeObjectRegistry();
+
   intptr_t live_bytes = 0;
   intptr_t freed_bytes = 0;
   intptr_t max_freed_bytes = 0;
   int curr_region = -1;
 
-  // Set the allocated_bytes counter to area_size. The free operations below
-  // will decrease the counter to actual live bytes.
-  p->ResetAllocatedBytes();
+  // Set the allocated_bytes_ counter to area_size and clear the wasted_memory_
+  // counter. The free operations below will decrease allocated_bytes_ to actual
+  // live bytes and keep track of wasted_memory_.
+  p->ResetAllocationStatistics();
 
   for (auto object_and_size :
        LiveObjectRange<kBlackObjects>(p, marking_state_->bitmap(p))) {
-    HeapObject* const object = object_and_size.first;
+    HeapObject const object = object_and_size.first;
+    if (is_code_page) p->RegisterCodeObjectInSwapRegistry(object);
     DCHECK(marking_state_->IsBlack(object));
     Address free_end = object->address();
     if (free_end != free_start) {
@@ -321,7 +326,7 @@ int Sweeper::RawSweep(Page* p, FreeListRebuildingMode free_list_mode,
     if (rebuild_skip_list) {
       int new_region_start = SkipList::RegionNumber(free_end);
       int new_region_end =
-          SkipList::RegionNumber(free_end + size - kPointerSize);
+          SkipList::RegionNumber(free_end + size - kTaggedSize);
       if (new_region_start != curr_region || new_region_end != curr_region) {
         skip_list->AddObject(free_end, size);
         curr_region = new_region_end;
@@ -503,8 +508,8 @@ Page* Sweeper::GetSweepingPageSafe(AllocationSpace space) {
   int space_index = GetSweepSpaceIndex(space);
   Page* page = nullptr;
   if (!sweeping_list_[space_index].empty()) {
-    page = sweeping_list_[space_index].front();
-    sweeping_list_[space_index].pop_front();
+    page = sweeping_list_[space_index].back();
+    sweeping_list_[space_index].pop_back();
   }
   return page;
 }

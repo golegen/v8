@@ -4,29 +4,8 @@
 
 // Flags: --experimental-wasm-eh --experimental-wasm-anyref --allow-natives-syntax
 
-load("test/mjsunit/wasm/wasm-constants.js");
 load("test/mjsunit/wasm/wasm-module-builder.js");
-
-// TODO(mstarzinger): Duplicated in the exceptions.js file. Dedupe.
-function assertWasmThrows(instance, runtime_id, values, code) {
-  try {
-    if (typeof code === 'function') {
-      code();
-    } else {
-      eval(code);
-    }
-  } catch (e) {
-    assertInstanceof(e, WebAssembly.RuntimeError);
-    var e_runtime_id = %GetWasmExceptionId(e, instance);
-    assertTrue(Number.isInteger(e_runtime_id));
-    assertEquals(e_runtime_id, runtime_id);
-    var e_values = %GetWasmExceptionValues(e);
-    assertArrayEquals(values, e_values);
-    return;  // Success.
-  }
-  throw new MjsUnitAssertionError('Did not throw expected <' + runtime_id +
-                                  '> with values: ' + values);
-}
+load("test/mjsunit/wasm/exceptions-utils.js");
 
 // Test the encoding of a thrown exception with a null-ref value.
 (function TestThrowRefNull() {
@@ -50,22 +29,25 @@ function assertWasmThrows(instance, runtime_id, values, code) {
   let except = builder.addException(kSig_v_r);
   builder.addFunction("throw_catch_null", kSig_i_i)
       .addBody([
-        kExprTry, kWasmI32,
+        kExprTry, kWasmAnyRef,
           kExprGetLocal, 0,
           kExprI32Eqz,
-          kExprIf, kWasmI32,
+          kExprIf, kWasmAnyRef,
             kExprRefNull,
             kExprThrow, except,
           kExprElse,
             kExprI32Const, 42,
+            kExprReturn,
           kExprEnd,
-        kExprCatch, except,
-          kExprRefIsNull,
-          kExprIf, kWasmI32,
-            kExprI32Const, 23,
-          kExprElse,
-            kExprUnreachable,
-          kExprEnd,
+        kExprCatch,
+          kExprBrOnExn, 0, except,
+          kExprRethrow,
+        kExprEnd,
+        kExprRefIsNull,
+        kExprIf, kWasmI32,
+          kExprI32Const, 23,
+        kExprElse,
+          kExprUnreachable,
         kExprEnd,
       ]).exportFunc();
   let instance = builder.instantiate();
@@ -103,14 +85,60 @@ function assertWasmThrows(instance, runtime_id, values, code) {
         kExprTry, kWasmAnyRef,
           kExprGetLocal, 0,
           kExprThrow, except,
-        kExprCatch, except,
-          // fall-through
+        kExprCatch,
+          kExprBrOnExn, 0, except,
+          kExprRethrow,
         kExprEnd,
       ]).exportFunc();
   let instance = builder.instantiate();
   let o = new Object();
 
   assertEquals(o, instance.exports.throw_catch_param(o));
+  assertEquals(1, instance.exports.throw_catch_param(1));
+  assertEquals(2.3, instance.exports.throw_catch_param(2.3));
+  assertEquals("str", instance.exports.throw_catch_param("str"));
+})();
+
+// Test throwing/catching a function reference type value.
+(function TestThrowCatchAnyFunc() {
+  print(arguments.callee.name);
+  let builder = new WasmModuleBuilder();
+  let except = builder.addException(kSig_v_a);
+  builder.addFunction("throw_catch_local", kSig_r_v)
+      .addLocals({anyfunc_count: 1})
+      .addBody([
+        kExprTry, kWasmAnyFunc,
+          kExprGetLocal, 0,
+          kExprThrow, except,
+        kExprCatch,
+          kExprBrOnExn, 0, except,
+          kExprRethrow,
+        kExprEnd,
+      ]).exportFunc();
+  let instance = builder.instantiate();
+
+  assertEquals(null, instance.exports.throw_catch_local());
+})();
+
+// Test throwing/catching an encapsulated exception type value.
+(function TestThrowCatchExceptRef() {
+  print(arguments.callee.name);
+  let builder = new WasmModuleBuilder();
+  let except = builder.addException(kSig_v_e);
+  builder.addFunction("throw_catch_param", kSig_e_e)
+      .addBody([
+        kExprTry, kWasmExceptRef,
+          kExprGetLocal, 0,
+          kExprThrow, except,
+        kExprCatch,
+          kExprBrOnExn, 0, except,
+          kExprRethrow,
+        kExprEnd,
+      ]).exportFunc();
+  let instance = builder.instantiate();
+  let e = new Error("my encapsulated error");
+
+  assertEquals(e, instance.exports.throw_catch_param(e));
   assertEquals(1, instance.exports.throw_catch_param(1));
   assertEquals(2.3, instance.exports.throw_catch_param(2.3));
   assertEquals("str", instance.exports.throw_catch_param("str"));

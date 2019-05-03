@@ -7,6 +7,7 @@
 #include "src/interpreter/bytecode-array-iterator.h"
 #include "src/interpreter/bytecode-array-random-iterator.h"
 #include "src/objects-inl.h"
+#include "src/ostreams.h"
 
 namespace v8 {
 namespace internal {
@@ -535,6 +536,12 @@ void BytecodeAnalysis::Analyze(BailoutId osr_bailout_id) {
                        liveness_map_);
       }
     }
+  }
+
+  DCHECK(do_liveness_analysis_);
+  if (FLAG_trace_environment_liveness) {
+    StdoutStream of;
+    PrintLivenessTo(of);
   }
 
   DCHECK(LivenessIsValid());

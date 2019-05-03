@@ -11,6 +11,7 @@
 #include "src/base/compiler-specific.h"
 #include "src/disasm.h"
 #include "src/ia32/sse-instr.h"
+#include "src/utils.h"
 
 namespace disasm {
 
@@ -1115,6 +1116,11 @@ int DisassemblerIA32::AVXInstruction(byte* data) {
         break;
       case 0x54:
         AppendToBuffer("vandps %s,%s,", NameOfXMMRegister(regop),
+                       NameOfXMMRegister(vvvv));
+        current += PrintRightXMMOperand(current);
+        break;
+      case 0x55:
+        AppendToBuffer("vandnps %s,%s,", NameOfXMMRegister(regop),
                        NameOfXMMRegister(vvvv));
         current += PrintRightXMMOperand(current);
         break;
@@ -2576,9 +2582,7 @@ int DisassemblerIA32::InstructionDecode(v8::internal::Vector<char> out_buffer,
     outp += v8::internal::SNPrintF(out_buffer + outp, "  ");
   }
 
-  outp += v8::internal::SNPrintF(out_buffer + outp,
-                                 " %s",
-                                 tmp_buffer_.start());
+  outp += v8::internal::SNPrintF(out_buffer + outp, " %s", tmp_buffer_.begin());
   return instr_len;
 }  // NOLINT (function is too long)
 
@@ -2603,7 +2607,7 @@ static const char* const xmm_regs[8] = {
 
 const char* NameConverter::NameOfAddress(byte* addr) const {
   v8::internal::SNPrintF(tmp_buffer_, "%p", static_cast<void*>(addr));
-  return tmp_buffer_.start();
+  return tmp_buffer_.begin();
 }
 
 
@@ -2666,7 +2670,7 @@ void Disassembler::Disassemble(FILE* f, byte* begin, byte* end,
     for (int i = 6 - (pc - prev_pc); i >= 0; i--) {
       fprintf(f, "  ");
     }
-    fprintf(f, "  %s\n", buffer.start());
+    fprintf(f, "  %s\n", buffer.begin());
   }
 }
 

@@ -30,11 +30,12 @@
 
 #if V8_TARGET_ARCH_ARM
 
+#include "src/arm/assembler-arm.h"
 #include "src/arm/constants-arm.h"
 #include "src/base/bits.h"
 #include "src/base/platform/platform.h"
 #include "src/disasm.h"
-#include "src/macro-assembler.h"
+#include "src/vector.h"
 
 namespace v8 {
 namespace internal {
@@ -2665,7 +2666,7 @@ namespace disasm {
 
 const char* NameConverter::NameOfAddress(byte* addr) const {
   v8::internal::SNPrintF(tmp_buffer_, "%p", static_cast<void*>(addr));
-  return tmp_buffer_.start();
+  return tmp_buffer_.begin();
 }
 
 
@@ -2721,7 +2722,7 @@ void Disassembler::Disassemble(FILE* f, byte* begin, byte* end,
     byte* prev_pc = pc;
     pc += d.InstructionDecode(buffer, pc);
     v8::internal::PrintF(f, "%p    %08x      %s\n", static_cast<void*>(prev_pc),
-                         *reinterpret_cast<int32_t*>(prev_pc), buffer.start());
+                         *reinterpret_cast<int32_t*>(prev_pc), buffer.begin());
   }
 }
 

@@ -5,8 +5,8 @@
 #ifndef V8_RELOC_INFO_H_
 #define V8_RELOC_INFO_H_
 
+#include "src/flush-instruction-cache.h"
 #include "src/globals.h"
-#include "src/objects.h"
 #include "src/objects/code.h"
 
 namespace v8 {
@@ -41,8 +41,8 @@ class RelocInfo {
   static const char* const kFillerCommentString;
 
   // The minimum size of a comment is equal to two bytes for the extra tagged
-  // pc and kPointerSize for the actual pointer to the comment.
-  static const int kMinRelocCommentSize = 2 + kPointerSize;
+  // pc and kSystemPointerSize for the actual pointer to the comment.
+  static const int kMinRelocCommentSize = 2 + kSystemPointerSize;
 
   // The maximum size for a call instruction including pc-jump.
   static const int kMaxCallSize = 6;
@@ -56,13 +56,13 @@ class RelocInfo {
 
     CODE_TARGET,
     RELATIVE_CODE_TARGET,  // LAST_CODE_TARGET_MODE
-    EMBEDDED_OBJECT,       // LAST_GCED_ENUM
+    COMPRESSED_EMBEDDED_OBJECT,
+    FULL_EMBEDDED_OBJECT,  // LAST_GCED_ENUM
 
     WASM_CALL,  // FIRST_SHAREABLE_RELOC_MODE
     WASM_STUB_CALL,
 
     RUNTIME_ENTRY,
-    COMMENT,
 
     EXTERNAL_REFERENCE,  // The address of an external C++ function.
     INTERNAL_REFERENCE,  // An address inside the same function.
@@ -94,7 +94,9 @@ class RelocInfo {
     LAST_CODE_TARGET_MODE = RELATIVE_CODE_TARGET,
     FIRST_REAL_RELOC_MODE = CODE_TARGET,
     LAST_REAL_RELOC_MODE = VENEER_POOL,
-    LAST_GCED_ENUM = EMBEDDED_OBJECT,
+    FIRST_EMBEDDED_OBJECT_RELOC_MODE = COMPRESSED_EMBEDDED_OBJECT,
+    LAST_EMBEDDED_OBJECT_RELOC_MODE = FULL_EMBEDDED_OBJECT,
+    LAST_GCED_ENUM = LAST_EMBEDDED_OBJECT_RELOC_MODE,
     FIRST_SHAREABLE_RELOC_MODE = WASM_CALL,
   };
 
@@ -108,7 +110,10 @@ class RelocInfo {
         rmode_(rmode),
         data_(data),
         host_(host),
-        constant_pool_(constant_pool) {}
+        constant_pool_(constant_pool) {
+    DCHECK_IMPLIES(!COMPRESS_POINTERS_BOOL,
+                   rmode != COMPRESSED_EMBEDDED_OBJECT);
+  }
 
   static constexpr bool IsRealRelocMode(Mode mode) {
     return mode >= FIRST_REAL_RELOC_MODE && mode <= LAST_REAL_RELOC_MODE;
@@ -130,8 +135,15 @@ class RelocInfo {
   static constexpr bool IsRelativeCodeTarget(Mode mode) {
     return mode == RELATIVE_CODE_TARGET;
   }
-  static constexpr bool IsEmbeddedObject(Mode mode) {
-    return mode == EMBEDDED_OBJECT;
+  static constexpr bool IsFullEmbeddedObject(Mode mode) {
+    return mode == FULL_EMBEDDED_OBJECT;
+  }
+  static constexpr bool IsCompressedEmbeddedObject(Mode mode) {
+    return COMPRESS_POINTERS_BOOL && mode == COMPRESSED_EMBEDDED_OBJECT;
+  }
+  static constexpr bool IsEmbeddedObjectMode(Mode mode) {
+    return IsInRange(mode, FIRST_EMBEDDED_OBJECT_RELOC_MODE,
+                     LAST_EMBEDDED_OBJECT_RELOC_MODE);
   }
   static constexpr bool IsRuntimeEntry(Mode mode) {
     return mode == RUNTIME_ENTRY;
@@ -141,7 +153,6 @@ class RelocInfo {
   static constexpr bool IsWasmStubCall(Mode mode) {
     return mode == WASM_STUB_CALL;
   }
-  static constexpr bool IsComment(Mode mode) { return mode == COMMENT; }
   static constexpr bool IsConstPool(Mode mode) { return mode == CONST_POOL; }
   static constexpr bool IsVeneerPool(Mode mode) { return mode == VENEER_POOL; }
   static constexpr bool IsDeoptPosition(Mode mode) {
@@ -206,11 +217,6 @@ class RelocInfo {
   // constant pool, otherwise the pointer is embedded in the instruction stream.
   bool IsInConstantPool();
 
-  // Returns the deoptimization id for the entry associated with the reloc info
-  // where {kind} is the deoptimization kind.
-  // This is only used for printing RUNTIME_ENTRY relocation info.
-  int GetDeoptimizationId(Isolate* isolate, DeoptimizeKind kind);
-
   Address wasm_call_address() const;
   Address wasm_stub_call_address() const;
 
@@ -229,10 +235,15 @@ class RelocInfo {
   // this relocation applies to;
   // can only be called if IsCodeTarget(rmode_) || IsRuntimeEntry(rmode_)
   V8_INLINE Address target_address();
-  V8_INLINE HeapObject* target_object();
+  V8_INLINE HeapObject target_object();
+
+  // In GC operations, we don't have a host_ pointer. Retrieving a target
+  // for COMPRESSED_EMBEDDED_OBJECT mode requires an isolate.
+  V8_INLINE HeapObject target_object_no_host(Isolate* isolate);
   V8_INLINE Handle<HeapObject> target_object_handle(Assembler* origin);
+
   V8_INLINE void set_target_object(
-      Heap* heap, HeapObject* target,
+      Heap* heap, HeapObject target,
       WriteBarrierMode write_barrier_mode = UPDATE_WRITE_BARRIER,
       ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED);
   V8_INLINE Address target_runtime_entry(Assembler* origin);
@@ -241,11 +252,6 @@ class RelocInfo {
       WriteBarrierMode write_barrier_mode = UPDATE_WRITE_BARRIER,
       ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED);
   V8_INLINE Address target_off_heap_target();
-  V8_INLINE Cell* target_cell();
-  V8_INLINE Handle<Cell> target_cell_handle();
-  V8_INLINE void set_target_cell(
-      Cell* cell, WriteBarrierMode write_barrier_mode = UPDATE_WRITE_BARRIER,
-      ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED);
   V8_INLINE void set_target_external_reference(
       Address, ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED);
 
@@ -260,6 +266,7 @@ class RelocInfo {
   // output before the next target.  Architecture-independent code shouldn't
   // dereference the pointer it gets back from this.
   V8_INLINE Address target_address_address();
+  bool HasTargetAddressAddress() const;
 
   // This indicates how much space a target takes up when deserializing a code
   // stream.  For most architectures this is just the size of a pointer.  For
@@ -289,7 +296,22 @@ class RelocInfo {
   V8_INLINE void WipeOut();
 
   template <typename ObjectVisitor>
-  inline void Visit(ObjectVisitor* v);
+  void Visit(ObjectVisitor* visitor) {
+    Mode mode = rmode();
+    if (IsEmbeddedObjectMode(mode)) {
+      visitor->VisitEmbeddedPointer(host(), this);
+    } else if (IsCodeTargetMode(mode)) {
+      visitor->VisitCodeTarget(host(), this);
+    } else if (IsExternalReference(mode)) {
+      visitor->VisitExternalReference(host(), this);
+    } else if (IsInternalReference(mode) || IsInternalReferenceEncoded(mode)) {
+      visitor->VisitInternalReference(host(), this);
+    } else if (IsRuntimeEntry(mode)) {
+      visitor->VisitRuntimeEntry(host(), this);
+    } else if (IsOffHeapTarget(mode)) {
+      visitor->VisitOffHeapTarget(host(), this);
+    }
+  }
 
   // Check whether the given code contains relocation information that
   // either is position-relative or movable by the garbage collector.
@@ -307,12 +329,18 @@ class RelocInfo {
 
   static const int kApplyMask;  // Modes affected by apply.  Depends on arch.
 
+  static int EmbeddedObjectModeMask() {
+    return ModeMask(RelocInfo::FULL_EMBEDDED_OBJECT) |
+           ModeMask(RelocInfo::COMPRESSED_EMBEDDED_OBJECT);
+  }
+
   // In addition to modes covered by the apply mask (which is applied at GC
   // time, among others), this covers all modes that are relocated by
   // Code::CopyFromNoFlush after code generation.
   static int PostCodegenRelocationMask() {
     return ModeMask(RelocInfo::CODE_TARGET) |
-           ModeMask(RelocInfo::EMBEDDED_OBJECT) |
+           ModeMask(RelocInfo::COMPRESSED_EMBEDDED_OBJECT) |
+           ModeMask(RelocInfo::FULL_EMBEDDED_OBJECT) |
            ModeMask(RelocInfo::RUNTIME_ENTRY) |
            ModeMask(RelocInfo::RELATIVE_CODE_TARGET) | kApplyMask;
   }
@@ -348,7 +376,7 @@ class RelocInfoWriter {
 
   // Max size (bytes) of a written RelocInfo. Longest encoding is
   // ExtraTag, VariableLengthPCJump, ExtraTag, pc_delta, data_delta.
-  static constexpr int kMaxSize = 1 + 4 + 1 + 1 + kPointerSize;
+  static constexpr int kMaxSize = 1 + 4 + 1 + 1 + kSystemPointerSize;
 
  private:
   inline uint32_t WriteLongPCJump(uint32_t pc_delta);
@@ -375,7 +403,7 @@ class RelocInfoWriter {
 //   }
 //
 // A mask can be specified to skip unwanted modes.
-class RelocIterator : public Malloced {
+class V8_EXPORT_PRIVATE RelocIterator : public Malloced {
  public:
   // Create a new iterator positioned at
   // the beginning of the reloc info.
@@ -390,7 +418,7 @@ class RelocIterator : public Malloced {
   explicit RelocIterator(Vector<byte> instructions,
                          Vector<const byte> reloc_info, Address const_pool,
                          int mode_mask = -1);
-  RelocIterator(RelocIterator&&) = default;
+  RelocIterator(RelocIterator&&) V8_NOEXCEPT = default;
 
   // Iteration
   bool done() const { return done_; }

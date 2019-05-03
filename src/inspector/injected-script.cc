@@ -57,10 +57,11 @@ static bool isResolvableNumberLike(String16 query) {
 }  // namespace
 
 using protocol::Array;
-using protocol::Runtime::PropertyDescriptor;
-using protocol::Runtime::InternalPropertyDescriptor;
-using protocol::Runtime::RemoteObject;
 using protocol::Maybe;
+using protocol::Runtime::InternalPropertyDescriptor;
+using protocol::Runtime::PrivatePropertyDescriptor;
+using protocol::Runtime::PropertyDescriptor;
+using protocol::Runtime::RemoteObject;
 
 class InjectedScript::ProtocolPromiseHandler {
  public:
@@ -302,12 +303,9 @@ Response InjectedScript::getProperties(
     Response response;
     std::unique_ptr<RemoteObject> remoteObject;
     if (mirror.value) {
-      response =
-          mirror.value->buildRemoteObject(context, wrapMode, &remoteObject);
-      if (!response.isSuccess()) return response;
-      response =
-          bindRemoteObjectIfNeeded(sessionId, context, mirror.value->v8Value(),
-                                   groupName, remoteObject.get());
+      response = wrapObjectMirror(*mirror.value, groupName, wrapMode,
+                                  v8::MaybeLocal<v8::Value>(),
+                                  kMaxCustomPreviewDepth, &remoteObject);
       if (!response.isSuccess()) return response;
       descriptor->setValue(std::move(remoteObject));
       descriptor->setWritable(mirror.writable);
@@ -358,30 +356,55 @@ Response InjectedScript::getProperties(
   return Response::OK();
 }
 
-Response InjectedScript::getInternalProperties(
+Response InjectedScript::getInternalAndPrivateProperties(
     v8::Local<v8::Value> value, const String16& groupName,
-    std::unique_ptr<protocol::Array<InternalPropertyDescriptor>>* result) {
-  *result = protocol::Array<InternalPropertyDescriptor>::create();
+    std::unique_ptr<protocol::Array<InternalPropertyDescriptor>>*
+        internalProperties,
+    std::unique_ptr<protocol::Array<PrivatePropertyDescriptor>>*
+        privateProperties) {
+  *internalProperties = protocol::Array<InternalPropertyDescriptor>::create();
+  *privateProperties = protocol::Array<PrivatePropertyDescriptor>::create();
+
+  if (!value->IsObject()) return Response::OK();
+
+  v8::Local<v8::Object> value_obj = value.As<v8::Object>();
+
   v8::Local<v8::Context> context = m_context->context();
   int sessionId = m_sessionId;
-  std::vector<InternalPropertyMirror> wrappers;
-  if (value->IsObject()) {
-    ValueMirror::getInternalProperties(m_context->context(),
-                                       value.As<v8::Object>(), &wrappers);
-  }
-  for (size_t i = 0; i < wrappers.size(); ++i) {
+  std::vector<InternalPropertyMirror> internalPropertiesWrappers;
+  ValueMirror::getInternalProperties(m_context->context(), value_obj,
+                                     &internalPropertiesWrappers);
+  for (const auto& internalProperty : internalPropertiesWrappers) {
     std::unique_ptr<RemoteObject> remoteObject;
-    Response response = wrappers[i].value->buildRemoteObject(
+    Response response = internalProperty.value->buildRemoteObject(
         m_context->context(), WrapMode::kNoPreview, &remoteObject);
     if (!response.isSuccess()) return response;
     response = bindRemoteObjectIfNeeded(sessionId, context,
-                                        wrappers[i].value->v8Value(), groupName,
-                                        remoteObject.get());
+                                        internalProperty.value->v8Value(),
+                                        groupName, remoteObject.get());
     if (!response.isSuccess()) return response;
-    (*result)->addItem(InternalPropertyDescriptor::create()
-                           .setName(wrappers[i].name)
-                           .setValue(std::move(remoteObject))
-                           .build());
+    (*internalProperties)
+        ->addItem(InternalPropertyDescriptor::create()
+                      .setName(internalProperty.name)
+                      .setValue(std::move(remoteObject))
+                      .build());
+  }
+  std::vector<PrivatePropertyMirror> privatePropertyWrappers =
+      ValueMirror::getPrivateProperties(m_context->context(), value_obj);
+  for (const auto& privateProperty : privatePropertyWrappers) {
+    std::unique_ptr<RemoteObject> remoteObject;
+    Response response = privateProperty.value->buildRemoteObject(
+        m_context->context(), WrapMode::kNoPreview, &remoteObject);
+    if (!response.isSuccess()) return response;
+    response = bindRemoteObjectIfNeeded(sessionId, context,
+                                        privateProperty.value->v8Value(),
+                                        groupName, remoteObject.get());
+    if (!response.isSuccess()) return response;
+    (*privateProperties)
+        ->addItem(PrivatePropertyDescriptor::create()
+                      .setName(privateProperty.name)
+                      .setValue(std::move(remoteObject))
+                      .build());
   }
   return Response::OK();
 }
@@ -411,12 +434,23 @@ Response InjectedScript::wrapObject(
     std::unique_ptr<protocol::Runtime::RemoteObject>* result) {
   v8::Local<v8::Context> context = m_context->context();
   v8::Context::Scope contextScope(context);
+  std::unique_ptr<ValueMirror> mirror = ValueMirror::create(context, value);
+  if (!mirror) return Response::InternalError();
+  return wrapObjectMirror(*mirror, groupName, wrapMode, customPreviewConfig,
+                          maxCustomPreviewDepth, result);
+}
+
+Response InjectedScript::wrapObjectMirror(
+    const ValueMirror& mirror, const String16& groupName, WrapMode wrapMode,
+    v8::MaybeLocal<v8::Value> customPreviewConfig, int maxCustomPreviewDepth,
+    std::unique_ptr<protocol::Runtime::RemoteObject>* result) {
   int customPreviewEnabled = m_customPreviewEnabled;
   int sessionId = m_sessionId;
-  auto obj = ValueMirror::create(m_context->context(), value);
-  if (!obj) return Response::InternalError();
-  Response response = obj->buildRemoteObject(context, wrapMode, result);
+  v8::Local<v8::Context> context = m_context->context();
+  v8::Context::Scope contextScope(context);
+  Response response = mirror.buildRemoteObject(context, wrapMode, result);
   if (!response.isSuccess()) return response;
+  v8::Local<v8::Value> value = mirror.v8Value();
   response = bindRemoteObjectIfNeeded(sessionId, context, value, groupName,
                                       result->get());
   if (!response.isSuccess()) return response;
@@ -577,7 +611,7 @@ Response InjectedScript::resolveCallArgument(
   if (callArgument->hasValue() || callArgument->hasUnserializableValue()) {
     String16 value;
     if (callArgument->hasValue()) {
-      value = "(" + callArgument->getValue(nullptr)->serialize() + ")";
+      value = "(" + callArgument->getValue(nullptr)->toJSONString() + ")";
     } else {
       String16 unserializableValue = callArgument->getUnserializableValue("");
       // Protect against potential identifier resolution for NaN and Infinity.

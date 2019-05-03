@@ -6,6 +6,7 @@
 #include "src/arguments-inl.h"
 #include "src/compiler.h"
 #include "src/counters.h"
+#include "src/heap/heap-inl.h"  // For ToBoolean. TODO(jkummerow): Drop.
 #include "src/isolate-inl.h"
 #include "src/runtime/runtime-utils.h"
 
@@ -73,23 +74,6 @@ RUNTIME_FUNCTION(Runtime_FunctionIsAPIFunction) {
 }
 
 
-// Set the native flag on the function.
-// This is used to decide if we should transform null and undefined
-// into the global object when doing call and apply.
-RUNTIME_FUNCTION(Runtime_SetNativeFlag) {
-  SealHandleScope shs(isolate);
-  DCHECK_EQ(1, args.length());
-
-  CONVERT_ARG_CHECKED(Object, object, 0);
-
-  if (object->IsJSFunction()) {
-    JSFunction* func = JSFunction::cast(object);
-    func->shared()->set_native(true);
-  }
-  return ReadOnlyRoots(isolate).undefined_value();
-}
-
-
 RUNTIME_FUNCTION(Runtime_Call) {
   HandleScope scope(isolate);
   DCHECK_LE(2, args.length());
@@ -101,7 +85,7 @@ RUNTIME_FUNCTION(Runtime_Call) {
     argv[i] = args.at(2 + i);
   }
   RETURN_RESULT_OR_FAILURE(
-      isolate, Execution::Call(isolate, target, receiver, argc, argv.start()));
+      isolate, Execution::Call(isolate, target, receiver, argc, argv.begin()));
 }
 
 

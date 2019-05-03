@@ -49,7 +49,7 @@ class JSListFormat : public JSObject {
       Isolate* isolate, Handle<JSListFormat> format_holder,
       Handle<JSArray> list);
 
-  static std::set<std::string> GetAvailableLocales();
+  V8_EXPORT_PRIVATE static const std::set<std::string>& GetAvailableLocales();
 
   Handle<String> StyleAsString() const;
   Handle<String> TypeAsString() const;
@@ -57,7 +57,7 @@ class JSListFormat : public JSObject {
   DECL_CAST(JSListFormat)
 
   // ListFormat accessors.
-  DECL_ACCESSORS2(locale, String)
+  DECL_ACCESSORS(locale, String)
   DECL_ACCESSORS(icu_formatter, Managed<icu::ListFormatter>)
 
   // Style: identifying the relative time format style used.
@@ -105,19 +105,10 @@ class JSListFormat : public JSObject {
   DECL_VERIFIER(JSListFormat)
 
   // Layout description.
-#define JS_LIST_FORMAT_FIELDS(V)      \
-  V(kJSListFormatOffset, kTaggedSize) \
-  V(kLocaleOffset, kTaggedSize)       \
-  V(kICUFormatterOffset, kTaggedSize) \
-  V(kFlagsOffset, kTaggedSize)        \
-  /* Header size. */                  \
-  V(kSize, 0)
+  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
+                                TORQUE_GENERATED_JSLIST_FORMAT_FIELDS)
 
-  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize, JS_LIST_FORMAT_FIELDS)
-#undef JS_LIST_FORMAT_FIELDS
-
- private:
-  DISALLOW_IMPLICIT_CONSTRUCTORS(JSListFormat);
+  OBJECT_CONSTRUCTORS(JSListFormat, JSObject);
 };
 
 }  // namespace internal

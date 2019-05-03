@@ -5,6 +5,7 @@
 #include "src/roots.h"
 
 #include "src/elements-kind.h"
+#include "src/objects-inl.h"
 #include "src/visitors.h"
 
 namespace v8 {
@@ -60,10 +61,29 @@ RootIndex RootsTable::RootIndexForEmptyFixedTypedArray(
 
 void ReadOnlyRoots::Iterate(RootVisitor* visitor) {
   visitor->VisitRootPointers(Root::kReadOnlyRootList, nullptr,
-                             roots_table_.read_only_roots_begin(),
-                             roots_table_.read_only_roots_end());
+                             FullObjectSlot(read_only_roots_),
+                             FullObjectSlot(&read_only_roots_[kEntriesCount]));
   visitor->Synchronize(VisitorSynchronization::kReadOnlyRootList);
 }
+
+#ifdef DEBUG
+
+bool ReadOnlyRoots::CheckType(RootIndex index) const {
+  Object root(at(index));
+  switch (index) {
+#define CHECKTYPE(Type, name, CamelName) \
+  case RootIndex::k##CamelName:          \
+    return root->Is##Type();
+    READ_ONLY_ROOT_LIST(CHECKTYPE)
+#undef CHECKTYPE
+
+    default:
+      UNREACHABLE();
+      return false;
+  }
+}
+
+#endif  // DEBUG
 
 }  // namespace internal
 }  // namespace v8

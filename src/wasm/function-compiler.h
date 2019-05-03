@@ -5,6 +5,8 @@
 #ifndef V8_WASM_FUNCTION_COMPILER_H_
 #define V8_WASM_FUNCTION_COMPILER_H_
 
+#include "src/code-desc.h"
+#include "src/trap-handler/trap-handler.h"
 #include "src/wasm/compilation-environment.h"
 #include "src/wasm/function-body-decoder.h"
 #include "src/wasm/wasm-limits.h"
@@ -14,69 +16,74 @@
 namespace v8 {
 namespace internal {
 
+class AssemblerBuffer;
 class Counters;
-
-namespace compiler {
-class TurbofanWasmCompilationUnit;
-}  // namespace compiler
 
 namespace wasm {
 
-class LiftoffCompilationUnit;
 class NativeModule;
 class WasmCode;
 class WasmEngine;
 struct WasmFunction;
 
-class WasmCompilationUnit final {
+class WasmInstructionBuffer final {
  public:
-  static ExecutionTier GetDefaultExecutionTier();
+  ~WasmInstructionBuffer();
+  std::unique_ptr<AssemblerBuffer> CreateView();
+  std::unique_ptr<uint8_t[]> ReleaseBuffer();
 
-  // If constructing from a background thread, pass in a Counters*, and ensure
-  // that the Counters live at least as long as this compilation unit (which
-  // typically means to hold a std::shared_ptr<Counters>).
-  // If used exclusively from a foreground thread, Isolate::counters() may be
-  // used by callers to pass Counters.
-  WasmCompilationUnit(WasmEngine*, NativeModule*, int index,
-                      ExecutionTier = GetDefaultExecutionTier());
-
-  ~WasmCompilationUnit();
-
-  void ExecuteCompilation(CompilationEnv*, std::shared_ptr<WireBytesStorage>,
-                          Counters*, WasmFeatures* detected);
-
-  NativeModule* native_module() const { return native_module_; }
-  ExecutionTier tier() const { return tier_; }
-  bool failed() const { return result_ == nullptr; }  // TODO(clemensh): Remove.
-  WasmCode* result() const { return result_; }
-
-  static bool CompileWasmFunction(Isolate* isolate, NativeModule* native_module,
-                                  WasmFeatures* detected,
-                                  const WasmFunction* function,
-                                  ExecutionTier = GetDefaultExecutionTier());
+  static std::unique_ptr<WasmInstructionBuffer> New();
 
  private:
-  friend class LiftoffCompilationUnit;
-  friend class compiler::TurbofanWasmCompilationUnit;
-
-  WasmEngine* const wasm_engine_;
-  const int func_index_;
-  NativeModule* const native_module_;
-  ExecutionTier tier_;
-  WasmCode* result_ = nullptr;
-
-  // LiftoffCompilationUnit, set if {tier_ == kLiftoff}.
-  std::unique_ptr<LiftoffCompilationUnit> liftoff_unit_;
-  // TurbofanWasmCompilationUnit, set if {tier_ == kTurbofan}.
-  std::unique_ptr<compiler::TurbofanWasmCompilationUnit> turbofan_unit_;
-
-  void SwitchTier(ExecutionTier new_tier);
-
-  // Called from {ExecuteCompilation} to set the result of compilation.
-  void SetResult(WasmCode*, Counters*);
-
-  DISALLOW_COPY_AND_ASSIGN(WasmCompilationUnit);
+  WasmInstructionBuffer() = delete;
+  DISALLOW_COPY_AND_ASSIGN(WasmInstructionBuffer);
 };
+
+struct WasmCompilationResult {
+ public:
+  MOVE_ONLY_WITH_DEFAULT_CONSTRUCTORS(WasmCompilationResult);
+
+  bool succeeded() const { return code_desc.buffer != nullptr; }
+  bool failed() const { return !succeeded(); }
+  operator bool() const { return succeeded(); }
+
+  CodeDesc code_desc;
+  std::unique_ptr<uint8_t[]> instr_buffer;
+  uint32_t frame_slot_count = 0;
+  uint32_t tagged_parameter_slots = 0;
+  OwnedVector<byte> source_positions;
+  OwnedVector<trap_handler::ProtectedInstructionData> protected_instructions;
+  int func_index;
+  ExecutionTier requested_tier;
+  ExecutionTier result_tier;
+};
+
+class V8_EXPORT_PRIVATE WasmCompilationUnit final {
+ public:
+  static ExecutionTier GetDefaultExecutionTier(const WasmModule*);
+
+  WasmCompilationUnit(int index, ExecutionTier tier)
+      : func_index_(index), tier_(tier) {}
+
+  WasmCompilationResult ExecuteCompilation(
+      WasmEngine*, CompilationEnv*, const std::shared_ptr<WireBytesStorage>&,
+      Counters*, WasmFeatures* detected);
+
+  ExecutionTier tier() const { return tier_; }
+
+  static void CompileWasmFunction(Isolate*, NativeModule*,
+                                  WasmFeatures* detected, const WasmFunction*,
+                                  ExecutionTier);
+
+ private:
+  int func_index_;
+  ExecutionTier tier_;
+};
+
+// {WasmCompilationUnit} should be trivially copyable and small enough so we can
+// efficiently pass it by value.
+ASSERT_TRIVIALLY_COPYABLE(WasmCompilationUnit);
+STATIC_ASSERT(sizeof(WasmCompilationUnit) <= 2 * kSystemPointerSize);
 
 }  // namespace wasm
 }  // namespace internal

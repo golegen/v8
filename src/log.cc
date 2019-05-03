@@ -12,15 +12,17 @@
 #include "src/bailout-reason.h"
 #include "src/base/platform/platform.h"
 #include "src/bootstrapper.h"
-#include "src/code-stubs.h"
 #include "src/counters.h"
 #include "src/deoptimizer.h"
 #include "src/global-handles.h"
 #include "src/interpreter/bytecodes.h"
 #include "src/interpreter/interpreter.h"
+#include "src/isolate.h"
 #include "src/libsampler/sampler.h"
 #include "src/log-inl.h"
+#include "src/log-utils.h"
 #include "src/macro-assembler.h"
+#include "src/memcopy.h"
 #include "src/objects/api-callbacks.h"
 #include "src/perf-jit.h"
 #include "src/profiler/tick-sample.h"
@@ -34,7 +36,6 @@
 #include "src/wasm/wasm-code-manager.h"
 #include "src/wasm/wasm-objects-inl.h"
 
-#include "src/utils.h"
 #include "src/version.h"
 
 namespace v8 {
@@ -139,7 +140,9 @@ class CodeEventLogger::NameBuffer {
   }
 
   void AppendBytes(const char* bytes) {
-    AppendBytes(bytes, StrLength(bytes));
+    size_t len = strlen(bytes);
+    DCHECK_GE(kMaxInt, len);
+    AppendBytes(bytes, static_cast<int>(len));
   }
 
   void AppendByte(char c) {
@@ -204,6 +207,7 @@ void CodeEventLogger::CodeCreateEvent(CodeEventListener::LogEventsAndTags tag,
                                       SharedFunctionInfo shared, Name name) {
   name_buffer_->Init(tag);
   name_buffer_->AppendBytes(ComputeMarker(shared, code));
+  name_buffer_->AppendByte(' ');
   name_buffer_->AppendName(name);
   LogRecordedBuffer(code, shared, name_buffer_->get(), name_buffer_->size());
 }
@@ -232,10 +236,10 @@ void CodeEventLogger::CodeCreateEvent(LogEventsAndTags tag,
                                       const wasm::WasmCode* code,
                                       wasm::WasmName name) {
   name_buffer_->Init(tag);
-  if (name.is_empty()) {
+  if (name.empty()) {
     name_buffer_->AppendBytes("<wasm-unknown>");
   } else {
-    name_buffer_->AppendBytes(name.start(), name.length());
+    name_buffer_->AppendBytes(name.begin(), name.length());
   }
   name_buffer_->AppendByte('-');
   if (code->IsAnonymous()) {
@@ -293,7 +297,7 @@ PerfBasicLogger::PerfBasicLogger(Isolate* isolate)
       base::OS::GetCurrentProcessId());
   CHECK_NE(size, -1);
   perf_output_handle_ =
-      base::OS::FOpen(perf_dump_name.start(), base::OS::LogFileOpenMode);
+      base::OS::FOpen(perf_dump_name.begin(), base::OS::LogFileOpenMode);
   CHECK_NOT_NULL(perf_output_handle_);
   setvbuf(perf_output_handle_, nullptr, _IOLBF, 0);
 }
@@ -487,7 +491,7 @@ class LowLevelLogger : public CodeEventLogger {
   void CodeMoveEvent(AbstractCode from, AbstractCode to) override;
   void CodeDisableOptEvent(AbstractCode code,
                            SharedFunctionInfo shared) override {}
-  void SnapshotPositionEvent(HeapObject* obj, int pos);
+  void SnapshotPositionEvent(HeapObject obj, int pos);
   void CodeMovingGCEvent() override;
 
  private:
@@ -540,10 +544,10 @@ LowLevelLogger::LowLevelLogger(Isolate* isolate, const char* name)
   // Open the low-level log file.
   size_t len = strlen(name);
   ScopedVector<char> ll_name(static_cast<int>(len + sizeof(kLogExt)));
-  MemCopy(ll_name.start(), name, len);
-  MemCopy(ll_name.start() + len, kLogExt, sizeof(kLogExt));
+  MemCopy(ll_name.begin(), name, len);
+  MemCopy(ll_name.begin() + len, kLogExt, sizeof(kLogExt));
   ll_output_handle_ =
-      base::OS::FOpen(ll_name.start(), base::OS::LogFileOpenMode);
+      base::OS::FOpen(ll_name.begin(), base::OS::LogFileOpenMode);
   setvbuf(ll_output_handle_, nullptr, _IOLBF, 0);
 
   LogCodeInfo();
@@ -561,8 +565,6 @@ void LowLevelLogger::LogCodeInfo() {
   const char arch[] = "ia32";
 #elif V8_TARGET_ARCH_X64 && V8_TARGET_ARCH_64_BIT
   const char arch[] = "x64";
-#elif V8_TARGET_ARCH_X64 && V8_TARGET_ARCH_32_BIT
-  const char arch[] = "x32";
 #elif V8_TARGET_ARCH_ARM
   const char arch[] = "arm";
 #elif V8_TARGET_ARCH_PPC
@@ -677,7 +679,7 @@ void JitLogger::LogRecordedBuffer(const wasm::WasmCode* code, const char* name,
   memset(static_cast<void*>(&event), 0, sizeof(event));
   event.type = JitCodeEvent::CODE_ADDED;
   event.code_type = JitCodeEvent::JIT_CODE;
-  event.code_start = code->instructions().start();
+  event.code_start = code->instructions().begin();
   event.code_len = code->instructions().length();
   event.name.str = name;
   event.name.len = length;
@@ -754,7 +756,7 @@ class SamplingThread : public base::Thread {
         sampler_(sampler),
         interval_microseconds_(interval_microseconds) {}
   void Run() override {
-    while (sampler_->IsProfiling()) {
+    while (sampler_->IsActive()) {
       sampler_->DoSample();
       base::OS::Sleep(
           base::TimeDelta::FromMicroseconds(interval_microseconds_));
@@ -780,9 +782,6 @@ class Profiler: public base::Thread {
 
   // Inserts collected profiling data into buffer.
   void Insert(v8::TickSample* sample) {
-    if (paused_)
-      return;
-
     if (Succ(head_) == static_cast<int>(base::Relaxed_Load(&tail_))) {
       overflow_ = true;
     } else {
@@ -793,10 +792,6 @@ class Profiler: public base::Thread {
   }
 
   void Run() override;
-
-  // Pause and Resume TickSample data collection.
-  void Pause() { paused_ = true; }
-  void Resume() { paused_ = false; }
 
  private:
   // Waits for a signal and removes profiling data.
@@ -824,14 +819,8 @@ class Profiler: public base::Thread {
   // Semaphore used for buffer synchronization.
   base::Semaphore buffer_semaphore_;
 
-  // Tells whether profiler is engaged, that is, processing thread is stated.
-  bool engaged_;
-
   // Tells whether worker thread should continue running.
   base::Atomic32 running_;
-
-  // Tells whether we are currently recording tick samples.
-  bool paused_;
 };
 
 
@@ -843,18 +832,16 @@ class Ticker: public sampler::Sampler {
  public:
   Ticker(Isolate* isolate, int interval_microseconds)
       : sampler::Sampler(reinterpret_cast<v8::Isolate*>(isolate)),
-        profiler_(nullptr),
-        sampling_thread_(new SamplingThread(this, interval_microseconds)) {}
+        sampling_thread_(
+            base::make_unique<SamplingThread>(this, interval_microseconds)) {}
 
   ~Ticker() override {
     if (IsActive()) Stop();
-    delete sampling_thread_;
   }
 
   void SetProfiler(Profiler* profiler) {
     DCHECK_NULL(profiler_);
     profiler_ = profiler;
-    IncreaseProfilingDepth();
     if (!IsActive()) Start();
     sampling_thread_->StartSynchronously();
   }
@@ -862,7 +849,6 @@ class Ticker: public sampler::Sampler {
   void ClearProfiler() {
     profiler_ = nullptr;
     if (IsActive()) Stop();
-    DecreaseProfilingDepth();
     sampling_thread_->Join();
   }
 
@@ -875,8 +861,8 @@ class Ticker: public sampler::Sampler {
   }
 
  private:
-  Profiler* profiler_;
-  SamplingThread* sampling_thread_;
+  Profiler* profiler_ = nullptr;
+  std::unique_ptr<SamplingThread> sampling_thread_;
 };
 
 //
@@ -887,18 +873,12 @@ Profiler::Profiler(Isolate* isolate)
       isolate_(isolate),
       head_(0),
       overflow_(false),
-      buffer_semaphore_(0),
-      engaged_(false),
-      paused_(false) {
+      buffer_semaphore_(0) {
   base::Relaxed_Store(&tail_, 0);
   base::Relaxed_Store(&running_, 0);
 }
 
-
 void Profiler::Engage() {
-  if (engaged_) return;
-  engaged_ = true;
-
   std::vector<base::OS::SharedLibraryAddress> addresses =
       base::OS::GetSharedLibraryAddresses();
   for (const auto& address : addresses) {
@@ -919,8 +899,6 @@ void Profiler::Engage() {
 
 
 void Profiler::Disengage() {
-  if (!engaged_) return;
-
   // Stop receiving ticks.
   isolate_->logger()->ticker_->ClearProfiler();
 
@@ -929,8 +907,6 @@ void Profiler::Disengage() {
   // the thread to terminate.
   base::Relaxed_Store(&running_, 0);
   v8::TickSample sample;
-  // Reset 'paused_' flag, otherwise semaphore may not be signalled.
-  Resume();
   Insert(&sample);
   Join();
 
@@ -954,21 +930,17 @@ void Profiler::Run() {
 
 Logger::Logger(Isolate* isolate)
     : isolate_(isolate),
-      ticker_(nullptr),
-      profiler_(nullptr),
       log_events_(nullptr),
       is_logging_(false),
       log_(nullptr),
-      perf_basic_logger_(nullptr),
-      perf_jit_logger_(nullptr),
-      ll_logger_(nullptr),
-      jit_logger_(nullptr),
       is_initialized_(false),
       existing_code_logger_(isolate) {}
 
 Logger::~Logger() {
   delete log_;
 }
+
+const LogSeparator Logger::kNext = LogSeparator::kSeparator;
 
 void Logger::AddCodeEventListener(CodeEventListener* listener) {
   bool result = isolate_->code_event_dispatcher()->AddListener(listener);
@@ -1109,6 +1081,12 @@ void Logger::LeaveExternal(Isolate* isolate) {
   isolate->set_current_vm_state(JS);
 }
 
+bool Logger::is_logging() {
+  // Disable logging while the CPU profiler is running.
+  if (isolate_->is_profiling()) return false;
+  return is_logging_;
+}
+
 // Instantiate template methods.
 #define V(TimerName, expose)                                           \
   template void TimerEventScope<TimerEvent##TimerName>::LogTimerEvent( \
@@ -1116,8 +1094,8 @@ void Logger::LeaveExternal(Isolate* isolate) {
 TIMER_EVENTS_LIST(V)
 #undef V
 
-void Logger::ApiNamedPropertyAccess(const char* tag, JSObject* holder,
-                                    Object* property_name) {
+void Logger::ApiNamedPropertyAccess(const char* tag, JSObject holder,
+                                    Object property_name) {
   DCHECK(property_name->IsName());
   if (!log_->IsEnabled() || !FLAG_log_api) return;
   Log::MessageBuilder msg(log_);
@@ -1126,8 +1104,7 @@ void Logger::ApiNamedPropertyAccess(const char* tag, JSObject* holder,
   msg.WriteToLogFile();
 }
 
-void Logger::ApiIndexedPropertyAccess(const char* tag,
-                                      JSObject* holder,
+void Logger::ApiIndexedPropertyAccess(const char* tag, JSObject holder,
                                       uint32_t index) {
   if (!log_->IsEnabled() || !FLAG_log_api) return;
   Log::MessageBuilder msg(log_);
@@ -1136,14 +1113,12 @@ void Logger::ApiIndexedPropertyAccess(const char* tag,
   msg.WriteToLogFile();
 }
 
-
-void Logger::ApiObjectAccess(const char* tag, JSObject* object) {
+void Logger::ApiObjectAccess(const char* tag, JSObject object) {
   if (!log_->IsEnabled() || !FLAG_log_api) return;
   Log::MessageBuilder msg(log_);
   msg << "api" << kNext << tag << kNext << object->class_name();
   msg.WriteToLogFile();
 }
-
 
 void Logger::ApiEntryCall(const char* name) {
   if (!log_->IsEnabled() || !FLAG_log_api) return;
@@ -1259,9 +1234,9 @@ void Logger::CodeCreateEvent(CodeEventListener::LogEventsAndTags tag,
   if (!FLAG_log_code || !log_->IsEnabled()) return;
   Log::MessageBuilder msg(log_);
   AppendCodeCreateHeader(msg, tag, AbstractCode::Kind::WASM_FUNCTION,
-                         code->instructions().start(),
+                         code->instructions().begin(),
                          code->instructions().length(), &timer_);
-  if (name.is_empty()) {
+  if (name.empty()) {
     msg << "<unknown wasm>";
   } else {
     msg.AppendString(name);
@@ -1295,9 +1270,9 @@ void Logger::CodeCreateEvent(CodeEventListener::LogEventsAndTags tag,
   }
 
   if (!FLAG_log_source_code) return;
-  Object* script_object = shared->script();
+  Object script_object = shared->script();
   if (!script_object->IsScript()) return;
-  Script* script = Script::cast(script_object);
+  Script script = Script::cast(script_object);
   if (!EnsureLogScriptSource(script)) return;
 
   // We log source code information in the form:
@@ -1432,13 +1407,13 @@ void CodeLinePosEvent(JitLogger* jit_logger, Address code_start,
 void Logger::CodeLinePosInfoRecordEvent(Address code_start,
                                         ByteArray source_position_table) {
   SourcePositionTableIterator iter(source_position_table);
-  CodeLinePosEvent(jit_logger_, code_start, iter);
+  CodeLinePosEvent(jit_logger_.get(), code_start, iter);
 }
 
 void Logger::CodeLinePosInfoRecordEvent(
     Address code_start, Vector<const byte> source_position_table) {
   SourcePositionTableIterator iter(source_position_table);
-  CodeLinePosEvent(jit_logger_, code_start, iter);
+  CodeLinePosEvent(jit_logger_.get(), code_start, iter);
 }
 
 void Logger::CodeNameEvent(Address addr, int pos, const char* code_name) {
@@ -1479,7 +1454,7 @@ void Logger::ResourceEvent(const char* name, const char* tag) {
   msg.WriteToLogFile();
 }
 
-void Logger::SuspectReadEvent(Name name, Object* obj) {
+void Logger::SuspectReadEvent(Name name, Object obj) {
   if (!log_->IsEnabled() || !FLAG_log_suspect) return;
   Log::MessageBuilder msg(log_);
   String class_name = obj->IsJSObject()
@@ -1566,7 +1541,7 @@ void Logger::ScriptEvent(ScriptEventType type, int script_id) {
   msg.WriteToLogFile();
 }
 
-void Logger::ScriptDetails(Script* script) {
+void Logger::ScriptDetails(Script script) {
   if (!log_->IsEnabled() || !FLAG_log_function_events) return;
   {
     Log::MessageBuilder msg(log_);
@@ -1584,7 +1559,7 @@ void Logger::ScriptDetails(Script* script) {
   EnsureLogScriptSource(script);
 }
 
-bool Logger::EnsureLogScriptSource(Script* script) {
+bool Logger::EnsureLogScriptSource(Script script) {
   if (!log_->IsEnabled()) return false;
   Log::MessageBuilder msg(log_);
   // Make sure the script is written to the log file.
@@ -1594,7 +1569,7 @@ bool Logger::EnsureLogScriptSource(Script* script) {
   }
   // This script has not been logged yet.
   logged_source_code_.insert(script_id);
-  Object* source_object = script->source();
+  Object source_object = script->source();
   if (!source_object->IsString()) return false;
   String source_code = String::cast(source_object);
   msg << "script-source" << kNext << script_id << kNext;
@@ -1623,7 +1598,7 @@ void Logger::RuntimeCallTimerEvent() {
 
 void Logger::TickEvent(v8::TickSample* sample, bool overflow) {
   if (!log_->IsEnabled() || !FLAG_prof_cpp) return;
-  if (V8_UNLIKELY(FLAG_runtime_stats ==
+  if (V8_UNLIKELY(TracingFlags::runtime_stats.load(std::memory_order_relaxed) ==
                   v8::tracing::TracingCategoryObserver::ENABLED_BY_NATIVE)) {
     RuntimeCallTimerEvent();
   }
@@ -1645,7 +1620,7 @@ void Logger::TickEvent(v8::TickSample* sample, bool overflow) {
   msg.WriteToLogFile();
 }
 
-void Logger::ICEvent(const char* type, bool keyed, Map map, Object* key,
+void Logger::ICEvent(const char* type, bool keyed, Map map, Object key,
                      char old_state, char new_state, const char* modifier,
                      const char* slow_stub_reason) {
   if (!log_->IsEnabled() || !FLAG_trace_ic) return;
@@ -1656,7 +1631,7 @@ void Logger::ICEvent(const char* type, bool keyed, Map map, Object* key,
   Address pc = isolate_->GetAbstractPC(&line, &column);
   msg << type << kNext << reinterpret_cast<void*>(pc) << kNext << line << kNext
       << column << kNext << old_state << kNext << new_state << kNext
-      << reinterpret_cast<void*>(map.ptr()) << kNext;
+      << AsHex::Address(map.ptr()) << kNext;
   if (key->IsSmi()) {
     msg << Smi::ToInt(key);
   } else if (key->IsNumber()) {
@@ -1672,7 +1647,7 @@ void Logger::ICEvent(const char* type, bool keyed, Map map, Object* key,
 }
 
 void Logger::MapEvent(const char* type, Map from, Map to, const char* reason,
-                      HeapObject* name_or_sfi) {
+                      HeapObject name_or_sfi) {
   DisallowHeapAllocation no_gc;
   if (!log_->IsEnabled() || !FLAG_trace_maps) return;
   if (!to.is_null()) MapDetails(to);
@@ -1685,19 +1660,18 @@ void Logger::MapEvent(const char* type, Map from, Map to, const char* reason,
   }
   Log::MessageBuilder msg(log_);
   msg << "map" << kNext << type << kNext << timer_.Elapsed().InMicroseconds()
-      << kNext << reinterpret_cast<void*>(from.ptr()) << kNext
-      << reinterpret_cast<void*>(to.ptr()) << kNext
-      << reinterpret_cast<void*>(pc) << kNext << line << kNext << column
-      << kNext << reason << kNext;
+      << kNext << AsHex::Address(from.ptr()) << kNext
+      << AsHex::Address(to.ptr()) << kNext << AsHex::Address(pc) << kNext
+      << line << kNext << column << kNext << reason << kNext;
 
-  if (name_or_sfi) {
+  if (!name_or_sfi.is_null()) {
     if (name_or_sfi->IsName()) {
       msg << Name::cast(name_or_sfi);
     } else if (name_or_sfi->IsSharedFunctionInfo()) {
       SharedFunctionInfo sfi = SharedFunctionInfo::cast(name_or_sfi);
       msg << sfi->DebugName();
 #if V8_SFI_HAS_UNIQUE_ID
-      msg << " " << sfi->unique_id();
+      msg << " " << SharedFunctionInfoWithID::cast(sfi)->unique_id();
 #endif  // V8_SFI_HAS_UNIQUE_ID
     }
   }
@@ -1709,7 +1683,7 @@ void Logger::MapCreate(Map map) {
   DisallowHeapAllocation no_gc;
   Log::MessageBuilder msg(log_);
   msg << "map-create" << kNext << timer_.Elapsed().InMicroseconds() << kNext
-      << reinterpret_cast<void*>(map.ptr());
+      << AsHex::Address(map.ptr());
   msg.WriteToLogFile();
 }
 
@@ -1718,28 +1692,13 @@ void Logger::MapDetails(Map map) {
   DisallowHeapAllocation no_gc;
   Log::MessageBuilder msg(log_);
   msg << "map-details" << kNext << timer_.Elapsed().InMicroseconds() << kNext
-      << reinterpret_cast<void*>(map.ptr()) << kNext;
+      << AsHex::Address(map.ptr()) << kNext;
   if (FLAG_trace_maps_details) {
     std::ostringstream buffer;
     map->PrintMapDetails(buffer);
     msg << buffer.str().c_str();
   }
   msg.WriteToLogFile();
-}
-
-void Logger::StopProfiler() {
-  if (!log_->IsEnabled()) return;
-  if (profiler_ != nullptr) {
-    profiler_->Pause();
-    is_logging_ = false;
-    RemoveCodeEventListener(this);
-  }
-}
-
-// This function can be called when Log's mutex is acquired,
-// either from main or Profiler's thread.
-void Logger::LogFailure() {
-  StopProfiler();
 }
 
 static void AddFunctionAndCode(SharedFunctionInfo sfi, AbstractCode code_object,
@@ -1762,7 +1721,7 @@ static int EnumerateCompiledFunctions(Heap* heap,
 
   // Iterate the heap to find shared function info objects and record
   // the unoptimized code for them.
-  for (HeapObject* obj = iterator.next(); obj != nullptr;
+  for (HeapObject obj = iterator.next(); !obj.is_null();
        obj = iterator.next()) {
     if (obj->IsSharedFunctionInfo()) {
       SharedFunctionInfo sfi = SharedFunctionInfo::cast(obj);
@@ -1776,9 +1735,9 @@ static int EnumerateCompiledFunctions(Heap* heap,
     } else if (obj->IsJSFunction()) {
       // Given that we no longer iterate over all optimized JSFunctions, we need
       // to take care of this here.
-      JSFunction* function = JSFunction::cast(obj);
+      JSFunction function = JSFunction::cast(obj);
       SharedFunctionInfo sfi = SharedFunctionInfo::cast(function->shared());
-      Object* maybe_script = sfi->script();
+      Object maybe_script = sfi->script();
       if (maybe_script->IsScript() &&
           !Script::cast(maybe_script)->HasValidSource()) {
         continue;
@@ -1802,12 +1761,13 @@ static int EnumerateWasmModuleObjects(
   DisallowHeapAllocation no_gc;
   int module_objects_count = 0;
 
-  for (HeapObject* obj = iterator.next(); obj != nullptr;
+  for (HeapObject obj = iterator.next(); !obj.is_null();
        obj = iterator.next()) {
     if (obj->IsWasmModuleObject()) {
-      WasmModuleObject* module = WasmModuleObject::cast(obj);
+      WasmModuleObject module = WasmModuleObject::cast(obj);
       if (module_objects != nullptr) {
-        module_objects[module_objects_count] = handle(module, heap->isolate());
+        module_objects[module_objects_count] =
+            handle(module, Isolate::FromHeap(heap));
       }
       module_objects_count++;
     }
@@ -1815,7 +1775,7 @@ static int EnumerateWasmModuleObjects(
   return module_objects_count;
 }
 
-void Logger::LogCodeObject(Object* object) {
+void Logger::LogCodeObject(Object object) {
   existing_code_logger_.LogCodeObject(object);
 }
 
@@ -1834,10 +1794,10 @@ void Logger::LogAccessorCallbacks() {
   Heap* heap = isolate_->heap();
   HeapIterator iterator(heap);
   DisallowHeapAllocation no_gc;
-  for (HeapObject* obj = iterator.next(); obj != nullptr;
+  for (HeapObject obj = iterator.next(); !obj.is_null();
        obj = iterator.next()) {
     if (!obj->IsAccessorInfo()) continue;
-    AccessorInfo* ai = AccessorInfo::cast(obj);
+    AccessorInfo ai = AccessorInfo::cast(obj);
     if (!ai->name()->IsName()) continue;
     Address getter_entry = v8::ToCData<Address>(ai->getter());
     Name name = Name::cast(ai->name());
@@ -1861,7 +1821,7 @@ void Logger::LogAllMaps() {
   DisallowHeapAllocation no_gc;
   Heap* heap = isolate_->heap();
   HeapIterator iterator(heap);
-  for (HeapObject* obj = iterator.next(); obj != nullptr;
+  for (HeapObject obj = iterator.next(); !obj.is_null();
        obj = iterator.next()) {
     if (!obj->IsMap()) continue;
     Map map = Map::cast(obj);
@@ -1872,9 +1832,11 @@ void Logger::LogAllMaps() {
 
 static void AddIsolateIdIfNeeded(std::ostream& os,  // NOLINT
                                  Isolate* isolate) {
-  if (FLAG_logfile_per_isolate) os << "isolate-" << isolate << "-";
+  if (FLAG_logfile_per_isolate) {
+    os << "isolate-" << isolate << "-" << base::OS::GetCurrentProcessId()
+       << "-";
+  }
 }
-
 
 static void PrepareLogFileName(std::ostream& os,  // NOLINT
                                Isolate* isolate, const char* file_name) {
@@ -1932,21 +1894,21 @@ bool Logger::SetUp(Isolate* isolate) {
   log_ = new Log(this, log_file_name.str().c_str());
 
   if (FLAG_perf_basic_prof) {
-    perf_basic_logger_ = new PerfBasicLogger(isolate);
-    AddCodeEventListener(perf_basic_logger_);
+    perf_basic_logger_.reset(new PerfBasicLogger(isolate));
+    AddCodeEventListener(perf_basic_logger_.get());
   }
 
   if (FLAG_perf_prof) {
-    perf_jit_logger_ = new PerfJitLogger(isolate);
-    AddCodeEventListener(perf_jit_logger_);
+    perf_jit_logger_.reset(new PerfJitLogger(isolate));
+    AddCodeEventListener(perf_jit_logger_.get());
   }
 
   if (FLAG_ll_prof) {
-    ll_logger_ = new LowLevelLogger(isolate, log_file_name.str().c_str());
-    AddCodeEventListener(ll_logger_);
+    ll_logger_.reset(new LowLevelLogger(isolate, log_file_name.str().c_str()));
+    AddCodeEventListener(ll_logger_.get());
   }
 
-  ticker_ = new Ticker(isolate, FLAG_prof_sampling_interval);
+  ticker_.reset(new Ticker(isolate, FLAG_prof_sampling_interval));
 
   if (Log::InitLogAtStart()) {
     is_logging_ = true;
@@ -1955,7 +1917,7 @@ bool Logger::SetUp(Isolate* isolate) {
   timer_.Start();
 
   if (FLAG_prof_cpp) {
-    profiler_ = new Profiler(isolate);
+    profiler_.reset(new Profiler(isolate));
     is_logging_ = true;
     profiler_->Engage();
   }
@@ -1971,14 +1933,16 @@ bool Logger::SetUp(Isolate* isolate) {
 void Logger::SetCodeEventHandler(uint32_t options,
                                  JitCodeEventHandler event_handler) {
   if (jit_logger_) {
-    RemoveCodeEventListener(jit_logger_);
-    delete jit_logger_;
-    jit_logger_ = nullptr;
+    RemoveCodeEventListener(jit_logger_.get());
+    jit_logger_.reset();
   }
 
   if (event_handler) {
-    jit_logger_ = new JitLogger(isolate_, event_handler);
-    AddCodeEventListener(jit_logger_);
+    if (isolate_->wasm_engine() != nullptr) {
+      isolate_->wasm_engine()->EnableCodeLogging(isolate_);
+    }
+    jit_logger_.reset(new JitLogger(isolate_, event_handler));
+    AddCodeEventListener(jit_logger_.get());
     if (options & kJitCodeEventEnumExisting) {
       HandleScope scope(isolate_);
       LogCodeObjects();
@@ -1987,15 +1951,12 @@ void Logger::SetCodeEventHandler(uint32_t options,
   }
 }
 
-sampler::Sampler* Logger::sampler() {
-  return ticker_;
-}
+sampler::Sampler* Logger::sampler() { return ticker_.get(); }
 
 void Logger::StopProfilerThread() {
   if (profiler_ != nullptr) {
     profiler_->Disengage();
-    delete profiler_;
-    profiler_ = nullptr;
+    profiler_.reset();
   }
 }
 
@@ -2006,37 +1967,32 @@ FILE* Logger::TearDown() {
   // Stop the profiler thread before closing the file.
   StopProfilerThread();
 
-  delete ticker_;
-  ticker_ = nullptr;
+  ticker_.reset();
 
   if (perf_basic_logger_) {
-    RemoveCodeEventListener(perf_basic_logger_);
-    delete perf_basic_logger_;
-    perf_basic_logger_ = nullptr;
+    RemoveCodeEventListener(perf_basic_logger_.get());
+    perf_basic_logger_.reset();
   }
 
   if (perf_jit_logger_) {
-    RemoveCodeEventListener(perf_jit_logger_);
-    delete perf_jit_logger_;
-    perf_jit_logger_ = nullptr;
+    RemoveCodeEventListener(perf_jit_logger_.get());
+    perf_jit_logger_.reset();
   }
 
   if (ll_logger_) {
-    RemoveCodeEventListener(ll_logger_);
-    delete ll_logger_;
-    ll_logger_ = nullptr;
+    RemoveCodeEventListener(ll_logger_.get());
+    ll_logger_.reset();
   }
 
   if (jit_logger_) {
-    RemoveCodeEventListener(jit_logger_);
-    delete jit_logger_;
-    jit_logger_ = nullptr;
+    RemoveCodeEventListener(jit_logger_.get());
+    jit_logger_.reset();
   }
 
   return log_->Close();
 }
 
-void ExistingCodeLogger::LogCodeObject(Object* object) {
+void ExistingCodeLogger::LogCodeObject(Object object) {
   AbstractCode abstract_code = AbstractCode::cast(object);
   CodeEventListener::LogEventsAndTags tag = CodeEventListener::STUB_TAG;
   const char* description = "Unknown code from before profiling";
@@ -2047,9 +2003,7 @@ void ExistingCodeLogger::LogCodeObject(Object* object) {
     case AbstractCode::BYTECODE_HANDLER:
       return;  // We log it later by walking the dispatch table.
     case AbstractCode::STUB:
-      description =
-          CodeStub::MajorName(CodeStub::GetMajorKey(abstract_code->GetCode()));
-      if (description == nullptr) description = "A stub from before profiling";
+      description = "STUB code";
       tag = CodeEventListener::STUB_TAG;
       break;
     case AbstractCode::REGEXP:
@@ -2096,7 +2050,7 @@ void ExistingCodeLogger::LogCodeObjects() {
   Heap* heap = isolate_->heap();
   HeapIterator iterator(heap);
   DisallowHeapAllocation no_gc;
-  for (HeapObject* obj = iterator.next(); obj != nullptr;
+  for (HeapObject obj = iterator.next(); !obj.is_null();
        obj = iterator.next()) {
     if (obj->IsCode()) LogCodeObject(obj);
     if (obj->IsBytecodeArray()) LogCodeObject(obj);
@@ -2110,11 +2064,12 @@ void ExistingCodeLogger::LogCompiledFunctions() {
       EnumerateCompiledFunctions(heap, nullptr, nullptr);
   ScopedVector<Handle<SharedFunctionInfo>> sfis(compiled_funcs_count);
   ScopedVector<Handle<AbstractCode>> code_objects(compiled_funcs_count);
-  EnumerateCompiledFunctions(heap, sfis.start(), code_objects.start());
+  EnumerateCompiledFunctions(heap, sfis.begin(), code_objects.begin());
 
   // During iteration, there can be heap allocation due to
   // GetScriptLineNumber call.
   for (int i = 0; i < compiled_funcs_count; ++i) {
+    SharedFunctionInfo::EnsureSourcePositionsAvailable(isolate_, sfis[i]);
     if (sfis[i]->function_data()->IsInterpreterData()) {
       LogExistingFunction(
           sfis[i],
@@ -2164,11 +2119,11 @@ void ExistingCodeLogger::LogExistingFunction(
     }
   } else if (shared->IsApiFunction()) {
     // API function.
-    FunctionTemplateInfo* fun_data = shared->get_api_func_data();
-    Object* raw_call_data = fun_data->call_code();
+    FunctionTemplateInfo fun_data = shared->get_api_func_data();
+    Object raw_call_data = fun_data->call_code();
     if (!raw_call_data->IsUndefined(isolate_)) {
-      CallHandlerInfo* call_data = CallHandlerInfo::cast(raw_call_data);
-      Object* callback_obj = call_data->callback();
+      CallHandlerInfo call_data = CallHandlerInfo::cast(raw_call_data);
+      Object callback_obj = call_data->callback();
       Address entry_point = v8::ToCData<Address>(callback_obj);
 #if USES_FUNCTION_DESCRIPTORS
       entry_point = *FUNCTION_ENTRYPOINT_ADDRESS(entry_point);

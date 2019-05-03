@@ -63,7 +63,7 @@ bool DisassembleAndCompare(byte* begin, UseRegex use_regex,
   std::vector<std::string> disassembly;
   for (byte* pc = begin; pc < end;) {
     pc += disasm.InstructionDecode(buffer, pc);
-    disassembly.emplace_back(buffer.start());
+    disassembly.emplace_back(buffer.begin());
   }
 
   bool test_passed = true;
@@ -106,12 +106,13 @@ bool DisassembleAndCompare(byte* begin, UseRegex use_regex,
 // Set up V8 to a state where we can at least run the assembler and
 // disassembler. Declare the variables and allocate the data structures used
 // in the rest of the macros.
-#define SET_UP()                                            \
-  CcTest::InitializeVM();                                   \
-  Isolate* isolate = CcTest::i_isolate();                   \
-  HandleScope scope(isolate);                               \
-  byte* buffer = reinterpret_cast<byte*>(malloc(4 * 1024)); \
-  Assembler assm(AssemblerOptions{}, buffer, 4 * 1024);     \
+#define SET_UP()                                             \
+  CcTest::InitializeVM();                                    \
+  Isolate* isolate = CcTest::i_isolate();                    \
+  HandleScope scope(isolate);                                \
+  byte* buffer = reinterpret_cast<byte*>(malloc(4 * 1024));  \
+  Assembler assm(AssemblerOptions{},                         \
+                 ExternalAssemblerBuffer(buffer, 4 * 1024)); \
   bool failure = false;
 
 // This macro assembles one instruction using the preallocated assembler and

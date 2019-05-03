@@ -5,6 +5,8 @@
 #ifndef V8_SNAPSHOT_READ_ONLY_SERIALIZER_H_
 #define V8_SNAPSHOT_READ_ONLY_SERIALIZER_H_
 
+#include <unordered_set>
+
 #include "src/snapshot/roots-serializer.h"
 
 namespace v8 {
@@ -13,7 +15,7 @@ namespace internal {
 class HeapObject;
 class SnapshotByteSink;
 
-class ReadOnlySerializer : public RootsSerializer {
+class V8_EXPORT_PRIVATE ReadOnlySerializer : public RootsSerializer {
  public:
   explicit ReadOnlySerializer(Isolate* isolate);
   ~ReadOnlySerializer() override;
@@ -29,14 +31,15 @@ class ReadOnlySerializer : public RootsSerializer {
   // ReadOnlyObjectCache bytecode into |sink|. Returns whether this was
   // successful.
   bool SerializeUsingReadOnlyObjectCache(SnapshotByteSink* sink,
-                                         HeapObject* obj, HowToCode how_to_code,
-                                         WhereToPoint where_to_point, int skip);
+                                         HeapObject obj);
 
  private:
-  void SerializeObject(HeapObject* o, HowToCode how_to_code,
-                       WhereToPoint where_to_point, int skip) override;
-  bool MustBeDeferred(HeapObject* object) override;
+  void SerializeObject(HeapObject o) override;
+  bool MustBeDeferred(HeapObject object) override;
 
+#ifdef DEBUG
+  std::unordered_set<HeapObject, Object::Hasher> serialized_objects_;
+#endif
   DISALLOW_COPY_AND_ASSIGN(ReadOnlySerializer);
 };
 

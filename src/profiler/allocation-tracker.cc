@@ -78,9 +78,8 @@ AllocationTraceTree::AllocationTraceTree()
 AllocationTraceNode* AllocationTraceTree::AddPathFromEnd(
     const Vector<unsigned>& path) {
   AllocationTraceNode* node = root();
-  for (unsigned* entry = path.start() + path.length() - 1;
-       entry != path.start() - 1;
-       --entry) {
+  for (unsigned* entry = path.begin() + path.length() - 1;
+       entry != path.begin() - 1; --entry) {
     node = node->FindOrAddChild(*entry);
   }
   return node;
@@ -208,7 +207,7 @@ void AllocationTracker::AllocationEvent(Address addr, int size) {
   // while we are capturing stack trace.
   heap->CreateFillerObjectAt(addr, size, ClearRecordedSlots::kNo);
 
-  Isolate* isolate = heap->isolate();
+  Isolate* isolate = Isolate::FromHeap(heap);
   int length = 0;
   JavaScriptFrameIterator it(isolate);
   while (!it.done() && length < kMaxAllocationTraceLength) {
@@ -246,7 +245,7 @@ unsigned AllocationTracker::AddFunctionInfo(SharedFunctionInfo shared,
     info->name = names_->GetName(shared->DebugName());
     info->function_id = id;
     if (shared->script()->IsScript()) {
-      Script* script = Script::cast(shared->script());
+      Script script = Script::cast(shared->script());
       if (script->name()->IsName()) {
         Name name = Name::cast(script->name());
         info->script_name = names_->GetName(name);
@@ -275,16 +274,14 @@ unsigned AllocationTracker::functionInfoIndexForVMState(StateTag state) {
   return info_index_for_other_state_;
 }
 
-
-AllocationTracker::UnresolvedLocation::UnresolvedLocation(
-    Script* script, int start, FunctionInfo* info)
-    : start_position_(start),
-      info_(info) {
+AllocationTracker::UnresolvedLocation::UnresolvedLocation(Script script,
+                                                          int start,
+                                                          FunctionInfo* info)
+    : start_position_(start), info_(info) {
   script_ = script->GetIsolate()->global_handles()->Create(script);
   GlobalHandles::MakeWeak(script_.location(), this, &HandleWeakScript,
                           v8::WeakCallbackType::kParameter);
 }
-
 
 AllocationTracker::UnresolvedLocation::~UnresolvedLocation() {
   if (!script_.is_null()) {

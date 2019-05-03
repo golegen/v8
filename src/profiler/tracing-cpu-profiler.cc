@@ -13,10 +13,6 @@ namespace internal {
 
 TracingCpuProfilerImpl::TracingCpuProfilerImpl(Isolate* isolate)
     : isolate_(isolate), profiling_enabled_(false) {
-  // Make sure tracing system notices profiler categories.
-  TRACE_EVENT_WARMUP_CATEGORY(TRACE_DISABLED_BY_DEFAULT("v8.cpu_profiler"));
-  TRACE_EVENT_WARMUP_CATEGORY(
-      TRACE_DISABLED_BY_DEFAULT("v8.cpu_profiler.hires"));
   V8::GetCurrentPlatform()->GetTracingController()->AddTraceStateObserver(this);
 }
 
@@ -57,7 +53,7 @@ void TracingCpuProfilerImpl::StartProfiling() {
   TRACE_EVENT_CATEGORY_GROUP_ENABLED(
       TRACE_DISABLED_BY_DEFAULT("v8.cpu_profiler.hires"), &enabled);
   int sampling_interval_us = enabled ? 100 : 1000;
-  profiler_.reset(new CpuProfiler(isolate_));
+  profiler_.reset(new CpuProfiler(isolate_, kDebugNaming));
   profiler_->set_sampling_interval(
       base::TimeDelta::FromMicroseconds(sampling_interval_us));
   profiler_->StartProfiling("", true);

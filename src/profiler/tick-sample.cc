@@ -5,8 +5,10 @@
 #include "src/profiler/tick-sample.h"
 
 #include "include/v8-profiler.h"
+#include "src/asan.h"
 #include "src/counters.h"
 #include "src/frames-inl.h"
+#include "src/heap/heap-inl.h"  // For MemoryAllocator::code_range.
 #include "src/msan.h"
 #include "src/simulator.h"
 #include "src/vm-state-inl.h"
@@ -98,10 +100,12 @@ bool SimulatorHelper::FillRegisters(Isolate* isolate,
   }
   state->sp = reinterpret_cast<void*>(simulator->get_register(Simulator::sp));
   state->fp = reinterpret_cast<void*>(simulator->get_register(Simulator::r11));
+  state->lr = reinterpret_cast<void*>(simulator->get_register(Simulator::lr));
 #elif V8_TARGET_ARCH_ARM64
   state->pc = reinterpret_cast<void*>(simulator->pc());
   state->sp = reinterpret_cast<void*>(simulator->sp());
   state->fp = reinterpret_cast<void*>(simulator->fp());
+  state->lr = reinterpret_cast<void*>(simulator->lr());
 #elif V8_TARGET_ARCH_MIPS || V8_TARGET_ARCH_MIPS64
   if (!simulator->has_bad_pc()) {
     state->pc = reinterpret_cast<void*>(simulator->get_pc());
@@ -114,12 +118,14 @@ bool SimulatorHelper::FillRegisters(Isolate* isolate,
   }
   state->sp = reinterpret_cast<void*>(simulator->get_register(Simulator::sp));
   state->fp = reinterpret_cast<void*>(simulator->get_register(Simulator::fp));
+  state->lr = reinterpret_cast<void*>(simulator->get_lr());
 #elif V8_TARGET_ARCH_S390
   if (!simulator->has_bad_pc()) {
     state->pc = reinterpret_cast<void*>(simulator->get_pc());
   }
   state->sp = reinterpret_cast<void*>(simulator->get_register(Simulator::sp));
   state->fp = reinterpret_cast<void*>(simulator->get_register(Simulator::fp));
+  state->lr = reinterpret_cast<void*>(simulator->get_register(Simulator::ra));
 #endif
   if (state->sp == 0 || state->fp == 0) {
     // It possible that the simulator is interrupted while it is updating
@@ -169,12 +175,17 @@ DISABLE_ASAN void TickSample::Init(Isolate* v8_isolate,
     external_callback_entry = info.external_callback_entry;
   } else if (frames_count) {
     // sp register may point at an arbitrary place in memory, make
-    // sure MSAN doesn't complain about it.
+    // sure sanitizers don't complain about it.
+    ASAN_UNPOISON_MEMORY_REGION(regs.sp, sizeof(void*));
     MSAN_MEMORY_IS_INITIALIZED(regs.sp, sizeof(void*));
     // Sample potential return address value for frameless invocation of
     // stubs (we'll figure out later, if this value makes sense).
-    tos = reinterpret_cast<void*>(
-        i::Memory<i::Address>(reinterpret_cast<i::Address>(regs.sp)));
+
+    // TODO(petermarshall): This read causes guard page violations on Windows.
+    // Either fix this mechanism for frameless stubs or remove it.
+    // tos =
+    // i::ReadUnalignedValue<void*>(reinterpret_cast<i::Address>(regs.sp));
+    tos = nullptr;
   } else {
     tos = nullptr;
   }
@@ -227,8 +238,10 @@ bool TickSample::GetStackSample(Isolate* v8_isolate, RegisterState* regs,
             : reinterpret_cast<void*>(*external_callback_entry_ptr);
   }
 
-  i::SafeStackFrameIterator it(isolate, reinterpret_cast<i::Address>(regs->fp),
+  i::SafeStackFrameIterator it(isolate, reinterpret_cast<i::Address>(regs->pc),
+                               reinterpret_cast<i::Address>(regs->fp),
                                reinterpret_cast<i::Address>(regs->sp),
+                               reinterpret_cast<i::Address>(regs->lr),
                                js_entry_sp);
   if (it.done()) return true;
 
@@ -262,7 +275,8 @@ bool TickSample::GetStackSample(Isolate* v8_isolate, RegisterState* regs,
 
       // If the bytecode array is a heap object and the bytecode offset is a
       // Smi, use those, otherwise fall back to using the frame's pc.
-      if (HAS_HEAP_OBJECT_TAG(bytecode_array) && HAS_SMI_TAG(bytecode_offset)) {
+      if (HAS_STRONG_HEAP_OBJECT_TAG(bytecode_array) &&
+          HAS_SMI_TAG(bytecode_offset)) {
         frames[i++] = reinterpret_cast<void*>(
             bytecode_array + i::Internals::SmiValue(bytecode_offset));
         continue;
@@ -284,6 +298,21 @@ void TickSample::Init(Isolate* isolate, const v8::RegisterState& state,
                        use_simulator_reg_state);
   if (pc == nullptr) return;
   timestamp = base::TimeTicks::HighResolutionNow();
+}
+
+void TickSample::print() const {
+  PrintF("TickSample: at %p\n", this);
+  PrintF(" - state: %s\n", StateToString(state));
+  PrintF(" - pc: %p\n", pc);
+  PrintF(" - stack: (%u frames)\n", frames_count);
+  for (unsigned i = 0; i < frames_count; i++) {
+    PrintF("    %p\n", stack[i]);
+  }
+  PrintF(" - has_external_callback: %d\n", has_external_callback);
+  PrintF(" - %s: %p\n",
+         has_external_callback ? "external_callback_entry" : "tos", tos);
+  PrintF(" - update_stats: %d\n", update_stats);
+  PrintF("\n");
 }
 
 }  // namespace internal

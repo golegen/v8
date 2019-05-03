@@ -93,6 +93,235 @@ TEST(Run_WasmModule_Return114) {
   Cleanup();
 }
 
+TEST(Run_WasmModule_CompilationHintsLazy) {
+  if (!FLAG_wasm_tier_up || !FLAG_liftoff) return;
+  {
+    EXPERIMENTAL_FLAG_SCOPE(compilation_hints);
+
+    static const int32_t kReturnValue = 114;
+    TestSignatures sigs;
+    v8::internal::AccountingAllocator allocator;
+    Zone zone(&allocator, ZONE_NAME);
+
+    // Build module with one lazy function.
+    WasmModuleBuilder* builder = new (&zone) WasmModuleBuilder(&zone);
+    WasmFunctionBuilder* f = builder->AddFunction(sigs.i_v());
+    ExportAsMain(f);
+    byte code[] = {WASM_I32V_2(kReturnValue)};
+    EMIT_CODE_WITH_END(f, code);
+    f->SetCompilationHint(WasmCompilationHintStrategy::kLazy,
+                          WasmCompilationHintTier::kBaseline,
+                          WasmCompilationHintTier::kOptimized);
+
+    // Compile module. No function is actually compiled as the function is lazy.
+    ZoneBuffer buffer(&zone);
+    builder->WriteTo(buffer);
+    Isolate* isolate = CcTest::InitIsolateOnce();
+    HandleScope scope(isolate);
+    testing::SetupIsolateForWasmModule(isolate);
+    ErrorThrower thrower(isolate, "CompileAndRunWasmModule");
+    MaybeHandle<WasmModuleObject> module = testing::CompileForTesting(
+        isolate, &thrower, ModuleWireBytes(buffer.begin(), buffer.end()));
+    CHECK(!module.is_null());
+
+    // Lazy function was not invoked and therefore not compiled yet.
+    static const int kFuncIndex = 0;
+    NativeModule* native_module = module.ToHandleChecked()->native_module();
+    CHECK(!native_module->HasCode(kFuncIndex));
+    auto* compilation_state = native_module->compilation_state();
+    CHECK(compilation_state->baseline_compilation_finished());
+
+    // Instantiate and invoke function.
+    MaybeHandle<WasmInstanceObject> instance =
+        isolate->wasm_engine()->SyncInstantiate(
+            isolate, &thrower, module.ToHandleChecked(), {}, {});
+    CHECK(!instance.is_null());
+    int32_t result = testing::RunWasmModuleForTesting(
+        isolate, instance.ToHandleChecked(), 0, nullptr);
+    CHECK_EQ(kReturnValue, result);
+
+    // Lazy function was invoked and therefore compiled.
+    CHECK(native_module->HasCode(kFuncIndex));
+    WasmCodeRefScope code_ref_scope;
+    ExecutionTier actual_tier = native_module->GetCode(kFuncIndex)->tier();
+    static_assert(ExecutionTier::kInterpreter < ExecutionTier::kLiftoff &&
+                      ExecutionTier::kLiftoff < ExecutionTier::kTurbofan,
+                  "Assume an order on execution tiers");
+    ExecutionTier baseline_tier = ExecutionTier::kLiftoff;
+    CHECK_LE(baseline_tier, actual_tier);
+    CHECK(compilation_state->baseline_compilation_finished());
+  }
+  Cleanup();
+}
+
+TEST(Run_WasmModule_CompilationHintsNoTiering) {
+  if (!FLAG_wasm_tier_up || !FLAG_liftoff) return;
+  {
+    EXPERIMENTAL_FLAG_SCOPE(compilation_hints);
+
+    static const int32_t kReturnValue = 114;
+    TestSignatures sigs;
+    v8::internal::AccountingAllocator allocator;
+    Zone zone(&allocator, ZONE_NAME);
+
+    // Build module with regularly compiled function (no tiering).
+    WasmModuleBuilder* builder = new (&zone) WasmModuleBuilder(&zone);
+    WasmFunctionBuilder* f = builder->AddFunction(sigs.i_v());
+    ExportAsMain(f);
+    byte code[] = {WASM_I32V_2(kReturnValue)};
+    EMIT_CODE_WITH_END(f, code);
+    f->SetCompilationHint(WasmCompilationHintStrategy::kEager,
+                          WasmCompilationHintTier::kBaseline,
+                          WasmCompilationHintTier::kBaseline);
+
+    // Compile module.
+    ZoneBuffer buffer(&zone);
+    builder->WriteTo(buffer);
+    Isolate* isolate = CcTest::InitIsolateOnce();
+    HandleScope scope(isolate);
+    testing::SetupIsolateForWasmModule(isolate);
+    ErrorThrower thrower(isolate, "CompileAndRunWasmModule");
+    MaybeHandle<WasmModuleObject> module = testing::CompileForTesting(
+        isolate, &thrower, ModuleWireBytes(buffer.begin(), buffer.end()));
+    CHECK(!module.is_null());
+
+    // Synchronous compilation finished and no tiering units were initialized.
+    static const int kFuncIndex = 0;
+    NativeModule* native_module = module.ToHandleChecked()->native_module();
+    CHECK(native_module->HasCode(kFuncIndex));
+    ExecutionTier expected_tier = ExecutionTier::kLiftoff;
+    WasmCodeRefScope code_ref_scope;
+    ExecutionTier actual_tier = native_module->GetCode(kFuncIndex)->tier();
+    CHECK_EQ(expected_tier, actual_tier);
+    auto* compilation_state = native_module->compilation_state();
+    CHECK(compilation_state->baseline_compilation_finished());
+    CHECK(compilation_state->top_tier_compilation_finished());
+  }
+  Cleanup();
+}
+
+TEST(Run_WasmModule_CompilationHintsTierUp) {
+  if (!FLAG_wasm_tier_up || !FLAG_liftoff) return;
+  {
+    EXPERIMENTAL_FLAG_SCOPE(compilation_hints);
+
+    static const int32_t kReturnValue = 114;
+    TestSignatures sigs;
+    v8::internal::AccountingAllocator allocator;
+    Zone zone(&allocator, ZONE_NAME);
+
+    // Build module with tiering compilation hint.
+    WasmModuleBuilder* builder = new (&zone) WasmModuleBuilder(&zone);
+    WasmFunctionBuilder* f = builder->AddFunction(sigs.i_v());
+    ExportAsMain(f);
+    byte code[] = {WASM_I32V_2(kReturnValue)};
+    EMIT_CODE_WITH_END(f, code);
+    f->SetCompilationHint(WasmCompilationHintStrategy::kEager,
+                          WasmCompilationHintTier::kBaseline,
+                          WasmCompilationHintTier::kOptimized);
+
+    // Compile module.
+    ZoneBuffer buffer(&zone);
+    builder->WriteTo(buffer);
+    Isolate* isolate = CcTest::InitIsolateOnce();
+    HandleScope scope(isolate);
+    testing::SetupIsolateForWasmModule(isolate);
+    ErrorThrower thrower(isolate, "CompileAndRunWasmModule");
+    MaybeHandle<WasmModuleObject> module = testing::CompileForTesting(
+        isolate, &thrower, ModuleWireBytes(buffer.begin(), buffer.end()));
+    CHECK(!module.is_null());
+
+    // Expect baseline or top tier code.
+    static const int kFuncIndex = 0;
+    NativeModule* native_module = module.ToHandleChecked()->native_module();
+    auto* compilation_state = native_module->compilation_state();
+    static_assert(ExecutionTier::kInterpreter < ExecutionTier::kLiftoff &&
+                      ExecutionTier::kLiftoff < ExecutionTier::kTurbofan,
+                  "Assume an order on execution tiers");
+    ExecutionTier baseline_tier = ExecutionTier::kLiftoff;
+    {
+      CHECK(native_module->HasCode(kFuncIndex));
+      WasmCodeRefScope code_ref_scope;
+      ExecutionTier actual_tier = native_module->GetCode(kFuncIndex)->tier();
+      CHECK_LE(baseline_tier, actual_tier);
+      CHECK(compilation_state->baseline_compilation_finished());
+    }
+
+    // Busy wait for top tier compilation to finish.
+    while (!compilation_state->top_tier_compilation_finished()) {
+    }
+
+    // Expect top tier code.
+    ExecutionTier top_tier = ExecutionTier::kTurbofan;
+    {
+      CHECK(native_module->HasCode(kFuncIndex));
+      WasmCodeRefScope code_ref_scope;
+      ExecutionTier actual_tier = native_module->GetCode(kFuncIndex)->tier();
+      CHECK_EQ(top_tier, actual_tier);
+      CHECK(compilation_state->baseline_compilation_finished());
+      CHECK(compilation_state->top_tier_compilation_finished());
+    }
+  }
+  Cleanup();
+}
+
+TEST(Run_WasmModule_CompilationHintsLazyBaselineEagerTopTier) {
+  if (!FLAG_wasm_tier_up || !FLAG_liftoff) return;
+  {
+    EXPERIMENTAL_FLAG_SCOPE(compilation_hints);
+
+    static const int32_t kReturnValue = 114;
+    TestSignatures sigs;
+    v8::internal::AccountingAllocator allocator;
+    Zone zone(&allocator, ZONE_NAME);
+
+    // Build module with tiering compilation hint.
+    WasmModuleBuilder* builder = new (&zone) WasmModuleBuilder(&zone);
+    WasmFunctionBuilder* f = builder->AddFunction(sigs.i_v());
+    ExportAsMain(f);
+    byte code[] = {WASM_I32V_2(kReturnValue)};
+    EMIT_CODE_WITH_END(f, code);
+    f->SetCompilationHint(
+        WasmCompilationHintStrategy::kLazyBaselineEagerTopTier,
+        WasmCompilationHintTier::kBaseline,
+        WasmCompilationHintTier::kOptimized);
+
+    // Compile module.
+    ZoneBuffer buffer(&zone);
+    builder->WriteTo(buffer);
+    Isolate* isolate = CcTest::InitIsolateOnce();
+    HandleScope scope(isolate);
+    testing::SetupIsolateForWasmModule(isolate);
+    ErrorThrower thrower(isolate, "CompileAndRunWasmModule");
+    MaybeHandle<WasmModuleObject> module = testing::CompileForTesting(
+        isolate, &thrower, ModuleWireBytes(buffer.begin(), buffer.end()));
+    CHECK(!module.is_null());
+
+    NativeModule* native_module = module.ToHandleChecked()->native_module();
+    auto* compilation_state = native_module->compilation_state();
+
+    // Busy wait for top tier compilation to finish.
+    while (!compilation_state->top_tier_compilation_finished()) {
+    }
+
+    // Expect top tier code.
+    static_assert(ExecutionTier::kInterpreter < ExecutionTier::kLiftoff &&
+                      ExecutionTier::kLiftoff < ExecutionTier::kTurbofan,
+                  "Assume an order on execution tiers");
+    static const int kFuncIndex = 0;
+    ExecutionTier top_tier = ExecutionTier::kTurbofan;
+    {
+      CHECK(native_module->HasCode(kFuncIndex));
+      WasmCodeRefScope code_ref_scope;
+      ExecutionTier actual_tier = native_module->GetCode(kFuncIndex)->tier();
+      CHECK_EQ(top_tier, actual_tier);
+      CHECK(compilation_state->baseline_compilation_finished());
+      CHECK(compilation_state->top_tier_compilation_finished());
+    }
+  }
+  Cleanup();
+}
+
 TEST(Run_WasmModule_CallAdd) {
   {
     v8::internal::AccountingAllocator allocator;
@@ -720,7 +949,7 @@ struct ManuallyExternalizedBuffer {
   size_t allocation_length_;
   bool const should_free_;
 
-  ManuallyExternalizedBuffer(JSArrayBuffer* buffer, Isolate* isolate)
+  ManuallyExternalizedBuffer(JSArrayBuffer buffer, Isolate* isolate)
       : isolate_(isolate),
         buffer_(buffer, isolate),
         allocation_base_(buffer->allocation_base()),
@@ -770,7 +999,7 @@ TEST(Run_WasmModule_Buffer_Externalized_GrowMem) {
     // Grow using the API.
     uint32_t result = WasmMemoryObject::Grow(isolate, memory_object, 4);
     CHECK_EQ(16, result);
-    CHECK(buffer1.buffer_->was_neutered());  // growing always neuters
+    CHECK(buffer1.buffer_->was_detached());  // growing always detaches
     CHECK_EQ(0, buffer1.buffer_->byte_length());
 
     CHECK_NE(*buffer1.buffer_, memory_object->array_buffer());
@@ -781,7 +1010,7 @@ TEST(Run_WasmModule_Buffer_Externalized_GrowMem) {
     // Grow using an internal WASM bytecode.
     result = testing::RunWasmModuleForTesting(isolate, instance, 0, nullptr);
     CHECK_EQ(26, result);
-    CHECK(buffer2.buffer_->was_neutered());  // growing always neuters
+    CHECK(buffer2.buffer_->was_detached());  // growing always detaches
     CHECK_EQ(0, buffer2.buffer_->byte_length());
     CHECK_NE(*buffer2.buffer_, memory_object->array_buffer());
   }
@@ -854,8 +1083,7 @@ TEST(Run_WasmModule_Reclaim_Memory) {
   Handle<JSArrayBuffer> buffer;
   for (int i = 0; i < 256; ++i) {
     HandleScope scope(isolate);
-    CHECK(NewArrayBuffer(isolate, kWasmPageSize, SharedFlag::kNotShared)
-              .ToHandle(&buffer));
+    CHECK(NewArrayBuffer(isolate, kWasmPageSize).ToHandle(&buffer));
   }
 }
 #endif

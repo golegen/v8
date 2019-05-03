@@ -148,16 +148,15 @@ class V8_EXPORT_PRIVATE NodeProperties final {
   enum InferReceiverMapsResult {
     kNoReceiverMaps,         // No receiver maps inferred.
     kReliableReceiverMaps,   // Receiver maps can be trusted.
-    kUnreliableReceiverMaps  // Receiver maps might have changed (side-effect),
-                             // but instance type is reliable.
+    kUnreliableReceiverMaps  // Receiver maps might have changed (side-effect).
   };
   static InferReceiverMapsResult InferReceiverMaps(
       JSHeapBroker* broker, Node* receiver, Node* effect,
       ZoneHandleSet<Map>* maps_return);
 
-  static MaybeHandle<Map> GetMapWitness(JSHeapBroker* broker, Node* node);
-  static bool HasInstanceTypeWitness(JSHeapBroker* broker, Node* receiver,
-                                     Node* effect, InstanceType instance_type);
+  // Return the initial map of the new-target if the allocation can be inlined.
+  static base::Optional<MapRef> GetJSCreateMap(JSHeapBroker* broker,
+                                               Node* receiver);
 
   // Walks up the {effect} chain to check that there's no observable side-effect
   // between the {effect} and it's {dominator}. Aborts the walk if there's join

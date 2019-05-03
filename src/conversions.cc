@@ -209,18 +209,20 @@ class StringToIntHelper {
 
   bool IsOneByte() const {
     return raw_one_byte_subject_ != nullptr ||
-           subject_->IsOneByteRepresentationUnderneath();
+           String::IsOneByteRepresentationUnderneath(*subject_);
   }
 
   Vector<const uint8_t> GetOneByteVector() {
     if (raw_one_byte_subject_ != nullptr) {
       return Vector<const uint8_t>(raw_one_byte_subject_, length_);
     }
-    return subject_->GetFlatContent().ToOneByteVector();
+    DisallowHeapAllocation no_gc;
+    return subject_->GetFlatContent(no_gc).ToOneByteVector();
   }
 
   Vector<const uc16> GetTwoByteVector() {
-    return subject_->GetFlatContent().ToUC16Vector();
+    DisallowHeapAllocation no_gc;
+    return subject_->GetFlatContent(no_gc).ToUC16Vector();
   }
 
   // Subclasses get access to internal state:
@@ -261,10 +263,10 @@ void StringToIntHelper::ParseInt() {
     DisallowHeapAllocation no_gc;
     if (IsOneByte()) {
       Vector<const uint8_t> vector = GetOneByteVector();
-      DetectRadixInternal(vector.start(), vector.length());
+      DetectRadixInternal(vector.begin(), vector.length());
     } else {
       Vector<const uc16> vector = GetTwoByteVector();
-      DetectRadixInternal(vector.start(), vector.length());
+      DetectRadixInternal(vector.begin(), vector.length());
     }
   }
   if (state_ != kRunning) return;
@@ -276,11 +278,11 @@ void StringToIntHelper::ParseInt() {
     if (IsOneByte()) {
       Vector<const uint8_t> vector = GetOneByteVector();
       DCHECK_EQ(length_, vector.length());
-      ParseInternal(vector.start());
+      ParseInternal(vector.begin());
     } else {
       Vector<const uc16> vector = GetTwoByteVector();
       DCHECK_EQ(length_, vector.length());
-      ParseInternal(vector.start());
+      ParseInternal(vector.begin());
     }
   }
   DCHECK_NE(state_, kRunning);
@@ -466,13 +468,13 @@ class NumberParseIntHelper : public StringToIntHelper {
     if (IsOneByte()) {
       Vector<const uint8_t> vector = GetOneByteVector();
       DCHECK_EQ(length(), vector.length());
-      result_ = is_power_of_two ? HandlePowerOfTwoCase(vector.start())
-                                : HandleBaseTenCase(vector.start());
+      result_ = is_power_of_two ? HandlePowerOfTwoCase(vector.begin())
+                                : HandleBaseTenCase(vector.begin());
     } else {
       Vector<const uc16> vector = GetTwoByteVector();
       DCHECK_EQ(length(), vector.length());
-      result_ = is_power_of_two ? HandlePowerOfTwoCase(vector.start())
-                                : HandleBaseTenCase(vector.start());
+      result_ = is_power_of_two ? HandlePowerOfTwoCase(vector.begin())
+                                : HandleBaseTenCase(vector.begin());
     }
     set_state(kDone);
   }
@@ -801,26 +803,21 @@ parsing_done:
 }
 
 double StringToDouble(const char* str, int flags, double empty_string_val) {
-  // We cast to const uint8_t* here to avoid instantiating the
-  // InternalStringToDouble() template for const char* as well.
-  const uint8_t* start = reinterpret_cast<const uint8_t*>(str);
-  const uint8_t* end = start + StrLength(str);
-  return InternalStringToDouble(start, end, flags, empty_string_val);
+  // We use {OneByteVector} instead of {CStrVector} to avoid instantiating the
+  // InternalStringToDouble() template for {const char*} as well.
+  return StringToDouble(OneByteVector(str), flags, empty_string_val);
 }
 
 double StringToDouble(Vector<const uint8_t> str, int flags,
                       double empty_string_val) {
-  // We cast to const uint8_t* here to avoid instantiating the
-  // InternalStringToDouble() template for const char* as well.
-  const uint8_t* start = reinterpret_cast<const uint8_t*>(str.start());
-  const uint8_t* end = start + str.length();
-  return InternalStringToDouble(start, end, flags, empty_string_val);
+  return InternalStringToDouble(str.begin(), str.end(), flags,
+                                empty_string_val);
 }
 
 double StringToDouble(Vector<const uc16> str, int flags,
                       double empty_string_val) {
-  const uc16* end = str.start() + str.length();
-  return InternalStringToDouble(str.start(), end, flags, empty_string_val);
+  const uc16* end = str.begin() + str.length();
+  return InternalStringToDouble(str.begin(), end, flags, empty_string_val);
 }
 
 double StringToInt(Isolate* isolate, Handle<String> string, int radix) {
@@ -895,10 +892,11 @@ class StringToBigIntHelper : public StringToIntHelper {
     int charcount = length() - cursor();
     // For literals, we pretenure the allocated BigInt, since it's about
     // to be stored in the interpreter's constants array.
-    PretenureFlag pretenure =
-        behavior_ == Behavior::kLiteral ? TENURED : NOT_TENURED;
+    AllocationType allocation = behavior_ == Behavior::kLiteral
+                                    ? AllocationType::kOld
+                                    : AllocationType::kYoung;
     MaybeHandle<FreshlyAllocatedBigInt> maybe = BigInt::AllocateFor(
-        isolate(), radix(), charcount, should_throw(), pretenure);
+        isolate(), radix(), charcount, should_throw(), allocation);
     if (!maybe.ToHandle(&result_)) {
       set_state(kError);
     }
@@ -934,7 +932,12 @@ const char* DoubleToCString(double v, Vector<char> buffer) {
     case FP_INFINITE: return (v < 0.0 ? "-Infinity" : "Infinity");
     case FP_ZERO: return "0";
     default: {
-      SimpleStringBuilder builder(buffer.start(), buffer.length());
+      if (IsInt32Double(v)) {
+        // This will trigger if v is -0 and -0.0 is stringified to "0".
+        // (see ES section 7.1.12.1 #sec-tostring-applied-to-the-number-type)
+        return IntToCString(FastD2I(v), buffer);
+      }
+      SimpleStringBuilder builder(buffer.begin(), buffer.length());
       int decimal_point;
       int sign;
       const int kV8DtoaBufferCapacity = kBase10MaximalLength + 1;
@@ -984,22 +987,21 @@ const char* DoubleToCString(double v, Vector<char> buffer) {
 
 
 const char* IntToCString(int n, Vector<char> buffer) {
-  bool negative = false;
-  if (n < 0) {
-    // We must not negate the most negative int.
-    if (n == kMinInt) return DoubleToCString(n, buffer);
-    negative = true;
+  bool negative = true;
+  if (n >= 0) {
     n = -n;
+    negative = false;
   }
   // Build the string backwards from the least significant digit.
   int i = buffer.length();
   buffer[--i] = '\0';
   do {
-    buffer[--i] = '0' + (n % 10);
+    // We ensured n <= 0, so the subtraction does the right addition.
+    buffer[--i] = '0' - (n % 10);
     n /= 10;
   } while (n);
   if (negative) buffer[--i] = '-';
-  return buffer.start() + i;
+  return buffer.begin() + i;
 }
 
 
@@ -1094,8 +1096,9 @@ static char* CreateExponentialRepresentation(char* decimal_rep,
   if (significant_digits != 1) {
     builder.AddCharacter('.');
     builder.AddString(decimal_rep + 1);
-    int rep_length = StrLength(decimal_rep);
-    builder.AddPadding('0', significant_digits - rep_length);
+    size_t rep_length = strlen(decimal_rep);
+    DCHECK_GE(significant_digits, rep_length);
+    builder.AddPadding('0', significant_digits - static_cast<int>(rep_length));
   }
 
   builder.AddCharacter('e');
@@ -1204,8 +1207,10 @@ char* DoubleToPrecisionCString(double value, int p) {
         builder.AddCharacter('.');
         const int extra = negative ? 2 : 1;
         if (decimal_rep_length > decimal_point) {
-          const int len = StrLength(decimal_rep + decimal_point);
-          const int n = Min(len, p - (builder.position() - extra));
+          const size_t len = strlen(decimal_rep + decimal_point);
+          DCHECK_GE(kMaxInt, len);
+          const int n =
+              Min(static_cast<int>(len), p - (builder.position() - extra));
           builder.AddSubstring(decimal_rep + decimal_point, n);
         }
         builder.AddPadding('0', extra + (p - builder.position()));
@@ -1311,7 +1316,7 @@ double StringToDouble(Isolate* isolate, Handle<String> string, int flags,
   Handle<String> flattened = String::Flatten(isolate, string);
   {
     DisallowHeapAllocation no_gc;
-    String::FlatContent flat = flattened->GetFlatContent();
+    String::FlatContent flat = flattened->GetFlatContent(no_gc);
     DCHECK(flat.IsFlat());
     if (flat.IsOneByte()) {
       return StringToDouble(flat.ToOneByteVector(), flags, empty_string_val);

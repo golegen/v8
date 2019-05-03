@@ -12,7 +12,8 @@
 #include "src/base/lazy-instance.h"
 #include "src/base/v8-fallthrough.h"
 #include "src/disasm.h"
-#include "src/macro-assembler.h"
+#include "src/utils.h"
+#include "src/x64/register-x64.h"
 #include "src/x64/sse-instr.h"
 
 namespace disasm {
@@ -250,10 +251,9 @@ void InstructionTable::AddJumpConditionalShort() {
   }
 }
 
-
-static v8::base::LazyInstance<InstructionTable>::type instruction_table =
-    LAZY_INSTANCE_INITIALIZER;
-
+namespace {
+DEFINE_LAZY_LEAKY_OBJECT_GETTER(InstructionTable, GetInstructionTable)
+}
 
 static const InstructionDesc cmov_instructions[16] = {
   {"cmovo", TWO_OPERANDS_INSTR, REG_OPER_OP_ORDER, false},
@@ -296,7 +296,7 @@ class DisassemblerX64 {
         vex_byte1_(0),
         vex_byte2_(0),
         byte_size_operand_(false),
-        instruction_table_(instruction_table.Pointer()) {
+        instruction_table_(GetInstructionTable()) {
     tmp_buffer_[0] = '\0';
   }
 
@@ -1310,6 +1310,11 @@ int DisassemblerX64::AVXInstruction(byte* data) {
         break;
       case 0x54:
         AppendToBuffer("vandps %s,%s,", NameOfXMMRegister(regop),
+                       NameOfXMMRegister(vvvv));
+        current += PrintRightXMMOperand(current);
+        break;
+      case 0x55:
+        AppendToBuffer("vandnps %s,%s,", NameOfXMMRegister(regop),
                        NameOfXMMRegister(vvvv));
         current += PrintRightXMMOperand(current);
         break;
@@ -2800,8 +2805,7 @@ int DisassemblerX64::InstructionDecode(v8::internal::Vector<char> out_buffer,
     outp += v8::internal::SNPrintF(out_buffer + outp, "  ");
   }
 
-  outp += v8::internal::SNPrintF(out_buffer + outp, " %s",
-                                 tmp_buffer_.start());
+  outp += v8::internal::SNPrintF(out_buffer + outp, " %s", tmp_buffer_.begin());
   return instr_len;
 }
 
@@ -2829,7 +2833,7 @@ static const char* const xmm_regs[16] = {
 
 const char* NameConverter::NameOfAddress(byte* addr) const {
   v8::internal::SNPrintF(tmp_buffer_, "%p", static_cast<void*>(addr));
-  return tmp_buffer_.start();
+  return tmp_buffer_.begin();
 }
 
 
@@ -2896,7 +2900,7 @@ void Disassembler::Disassemble(FILE* f, byte* begin, byte* end,
     for (int i = 6 - static_cast<int>(pc - prev_pc); i >= 0; i--) {
       fprintf(f, "  ");
     }
-    fprintf(f, "  %s\n", buffer.start());
+    fprintf(f, "  %s\n", buffer.begin());
   }
 }
 

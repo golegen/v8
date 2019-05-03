@@ -36,18 +36,11 @@ namespace internal {
 // the target map's descriptor array.  Stored transitions are weak in the GC
 // sense: both single transitions stored inline and TransitionArray fields are
 // cleared when the map they refer to is not otherwise reachable.
-class TransitionsAccessor {
+class V8_EXPORT_PRIVATE TransitionsAccessor {
  public:
-  TransitionsAccessor(Isolate* isolate, Map map, DisallowHeapAllocation* no_gc)
-      : isolate_(isolate), map_(map) {
-    Initialize();
-    USE(no_gc);
-  }
-  TransitionsAccessor(Isolate* isolate, Handle<Map> map)
-      : isolate_(isolate), map_handle_(map), map_(*map) {
-    Initialize();
-  }
-
+  inline TransitionsAccessor(Isolate* isolate, Map map,
+                             DisallowHeapAllocation* no_gc);
+  inline TransitionsAccessor(Isolate* isolate, Handle<Map> map);
   // Insert a new transition into |map|'s transition array, extending it
   // as necessary.
   // Requires the constructor that takes a Handle<Map> to have been used.
@@ -70,8 +63,8 @@ class TransitionsAccessor {
     return FindTransitionToDataProperty(name, kFieldOnly);
   }
 
-  Handle<String> ExpectedTransitionKey();
-  Handle<Map> ExpectedTransitionTarget();
+  inline Handle<String> ExpectedTransitionKey();
+  inline Handle<Map> ExpectedTransitionTarget();
 
   int NumberOfTransitions();
   // The size of transition arrays are limited so they do not end up in large
@@ -85,6 +78,10 @@ class TransitionsAccessor {
 
   static bool IsMatchingMap(Map target, Name name, PropertyKind kind,
                             PropertyAttributes attributes);
+
+  bool HasIntegrityLevelTransitionTo(
+      Map to, Symbol* out_symbol = nullptr,
+      PropertyAttributes* out_integrity_level = nullptr);
 
   // ===== ITERATION =====
   typedef void (*TraverseCallback)(Map map, void* data);
@@ -124,7 +121,7 @@ class TransitionsAccessor {
 #endif
 #if DEBUG
   void CheckNewTransitionsAreConsistent(TransitionArray old_transitions,
-                                        Object* transitions);
+                                        Object transitions);
   bool IsConsistentWithBackPointers();
   bool IsSortedNoDuplicates();
 #endif
@@ -139,11 +136,7 @@ class TransitionsAccessor {
     kFullTransitionArray,
   };
 
-  void Reload() {
-    DCHECK(!map_handle_.is_null());
-    map_ = *map_handle_;
-    Initialize();
-  }
+  inline void Reload();
 
   inline Encoding encoding() {
     DCHECK(!needs_reload_);
@@ -166,7 +159,7 @@ class TransitionsAccessor {
 #endif
   }
 
-  void Initialize();
+  inline void Initialize();
 
   inline Map GetSimpleTransition();
   bool HasSimpleTransitionTo(Map map);
@@ -210,7 +203,7 @@ class TransitionsAccessor {
 // [3 + number of transitions * kTransitionSize]: start of slack
 class TransitionArray : public WeakFixedArray {
  public:
-  DECL_CAST2(TransitionArray)
+  DECL_CAST(TransitionArray)
 
   inline WeakFixedArray GetPrototypeTransitions();
   inline bool HasPrototypeTransitions();
@@ -234,7 +227,7 @@ class TransitionArray : public WeakFixedArray {
   int GetSortedKeyIndex(int transition_number) { return transition_number; }
   inline int number_of_entries() const;
 #ifdef DEBUG
-  bool IsSortedNoDuplicates(int valid_entries = -1);
+  V8_EXPORT_PRIVATE bool IsSortedNoDuplicates(int valid_entries = -1);
 #endif
 
   void Sort();
@@ -302,6 +295,9 @@ class TransitionArray : public WeakFixedArray {
   int Search(PropertyKind kind, Name name, PropertyAttributes attributes,
              int* out_insertion_index = nullptr);
 
+  Map SearchAndGetTarget(PropertyKind kind, Name name,
+                         PropertyAttributes attributes);
+
   // Search a non-property transition (like elements kind, observe or frozen
   // transitions).
   inline int SearchSpecial(Symbol symbol, int* out_insertion_index = nullptr);
@@ -309,6 +305,8 @@ class TransitionArray : public WeakFixedArray {
   inline int SearchName(Name name, int* out_insertion_index = nullptr);
   int SearchDetails(int transition, PropertyKind kind,
                     PropertyAttributes attributes, int* out_insertion_index);
+  Map SearchDetailsAndGetTarget(int transition, PropertyKind kind,
+                                PropertyAttributes attributes);
 
   inline int number_of_transitions() const;
 

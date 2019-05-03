@@ -19,12 +19,13 @@ void LocalEmbedderHeapTracer::SetRemoteTracer(EmbedderHeapTracer* tracer) {
     remote_tracer_->isolate_ = reinterpret_cast<v8::Isolate*>(isolate_);
 }
 
-void LocalEmbedderHeapTracer::TracePrologue() {
+void LocalEmbedderHeapTracer::TracePrologue(
+    EmbedderHeapTracer::TraceFlags flags) {
   if (!InUse()) return;
 
   num_v8_marking_worklist_was_empty_ = 0;
   embedder_worklist_empty_ = false;
-  remote_tracer_->TracePrologue();
+  remote_tracer_->TracePrologue(flags);
 }
 
 void LocalEmbedderHeapTracer::TraceEpilogue() {
@@ -72,7 +73,7 @@ LocalEmbedderHeapTracer::ProcessingScope::~ProcessingScope() {
 }
 
 void LocalEmbedderHeapTracer::ProcessingScope::TracePossibleWrapper(
-    JSObject* js_object) {
+    JSObject js_object) {
   DCHECK(js_object->IsApiWrapper());
   if (js_object->GetEmbedderFieldCount() < 2) return;
 

@@ -183,7 +183,8 @@ Node* IntrinsicsGenerator::IntrinsicAsStubCall(
     stub_args[index++] = __ LoadRegisterFromRegisterList(args, i);
   }
   stub_args[index++] = context;
-  return __ CallStubN(callable.descriptor(), 1, input_count, stub_args);
+  return __ CallStubN(StubCallMode::kCallCodeObject, callable.descriptor(), 1,
+                      input_count, stub_args);
 }
 
 Node* IntrinsicsGenerator::IntrinsicAsBuiltinCall(
@@ -191,6 +192,13 @@ Node* IntrinsicsGenerator::IntrinsicAsBuiltinCall(
     Builtins::Name name) {
   Callable callable = Builtins::CallableFor(isolate_, name);
   return IntrinsicAsStubCall(args, context, callable);
+}
+
+Node* IntrinsicsGenerator::CopyDataProperties(
+    const InterpreterAssembler::RegListNodePair& args, Node* context) {
+  return IntrinsicAsStubCall(
+      args, context,
+      Builtins::CallableFor(isolate(), Builtins::kCopyDataProperties));
 }
 
 Node* IntrinsicsGenerator::CreateIterResultObject(
@@ -206,7 +214,7 @@ Node* IntrinsicsGenerator::HasProperty(
       args, context, Builtins::CallableFor(isolate(), Builtins::kHasProperty));
 }
 
-Node* IntrinsicsGenerator::ToString(
+Node* IntrinsicsGenerator::ToStringRT(
     const InterpreterAssembler::RegListNodePair& args, Node* context) {
   return IntrinsicAsStubCall(
       args, context, Builtins::CallableFor(isolate(), Builtins::kToString));

@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "src/base/macros.h"
-#include "src/debug/debug-interface.h"
+#include "src/inspector/inspected-context.h"
 #include "src/inspector/protocol/Debugger.h"
 #include "src/inspector/protocol/Forward.h"
 #include "src/inspector/protocol/Runtime.h"
@@ -31,7 +31,6 @@ class V8StackTraceImpl;
 struct V8StackTraceId;
 
 enum class WrapMode { kForceValue, kNoPreview, kWithPreview };
-enum class V8InternalValueType { kNone, kEntry, kScope, kScopeList };
 
 using protocol::Response;
 using TerminateExecutionCallback =
@@ -74,8 +73,8 @@ class V8Debugger : public v8::debug::DebugDelegate,
   // compiled.
   // Only scripts whose debug data matches |contextGroupId| will be reported.
   // Passing 0 will result in reporting all scripts.
-  void getCompiledScripts(int contextGroupId,
-                          std::vector<std::unique_ptr<V8DebuggerScript>>&);
+  std::vector<std::unique_ptr<V8DebuggerScript>> getCompiledScripts(
+      int contextGroupId, V8DebuggerAgentImpl* agent);
   void enable();
   void disable();
 
@@ -132,20 +131,21 @@ class V8Debugger : public v8::debug::DebugDelegate,
   std::shared_ptr<AsyncStackTrace> stackTraceFor(int contextGroupId,
                                                  const V8StackTraceId& id);
 
+  void reportTermination();
+
+ private:
   bool addInternalObject(v8::Local<v8::Context> context,
                          v8::Local<v8::Object> object,
                          V8InternalValueType type);
-  V8InternalValueType getInternalType(v8::Local<v8::Context> context,
-                                      v8::Local<v8::Object> object);
 
- private:
   void clearContinueToLocation();
   bool shouldContinueToCurrentLocation();
 
   static size_t nearHeapLimitCallback(void* data, size_t current_heap_limit,
                                       size_t initial_heap_limit);
   static void terminateExecutionCompletedCallback(v8::Isolate* isolate);
-
+  static void terminateExecutionCompletedCallbackIgnoringData(
+      v8::Isolate* isolate, void*);
   void handleProgramBreak(
       v8::Local<v8::Context> pausedContext, v8::Local<v8::Value> exception,
       const std::vector<v8::debug::BreakpointId>& hitBreakpoints,
@@ -197,12 +197,10 @@ class V8Debugger : public v8::debug::DebugDelegate,
   int currentContextGroupId();
   bool asyncStepOutOfFunction(int targetContextGroupId, bool onlyAtReturn);
 
-  v8::MaybeLocal<v8::Uint32> stableObjectId(v8::Local<v8::Context>,
-                                            v8::Local<v8::Value>);
-
   v8::Isolate* m_isolate;
   V8InspectorImpl* m_inspector;
   int m_enableCount;
+
   int m_breakpointsActiveCount = 0;
   int m_ignoreScriptParsedEventsCounter;
   size_t m_originalHeapLimit = 0;
@@ -254,11 +252,6 @@ class V8Debugger : public v8::debug::DebugDelegate,
       m_serializedDebuggerIdToDebuggerId;
 
   std::unique_ptr<TerminateExecutionCallback> m_terminateExecutionCallback;
-
-  uint32_t m_lastStableObjectId = 0;
-  v8::Global<v8::debug::WeakMap> m_stableObjectId;
-
-  v8::Global<v8::debug::WeakMap> m_internalObjects;
 
   WasmTranslation m_wasmTranslation;
 

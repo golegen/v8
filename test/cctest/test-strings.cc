@@ -35,7 +35,9 @@
 #include "src/v8.h"
 
 #include "src/api-inl.h"
+#include "src/base/platform/elapsed-timer.h"
 #include "src/heap/factory.h"
+#include "src/heap/heap-inl.h"
 #include "src/messages.h"
 #include "src/objects-inl.h"
 #include "src/unicode-decoder.h"
@@ -914,10 +916,10 @@ TEST(Utf8Conversion) {
   const char* one_byte_string = "abcdef12345";
   int len = v8::String::NewFromUtf8(CcTest::isolate(), one_byte_string,
                                     v8::NewStringType::kNormal,
-                                    StrLength(one_byte_string))
+                                    static_cast<int>(strlen(one_byte_string)))
                 .ToLocalChecked()
                 ->Utf8Length(CcTest::isolate());
-  CHECK_EQ(StrLength(one_byte_string), len);
+  CHECK_EQ(strlen(one_byte_string), len);
   // A mixed one-byte and two-byte string
   // U+02E4 -> CB A4
   // U+0064 -> 64
@@ -957,6 +959,109 @@ TEST(Utf8Conversion) {
   }
 }
 
+TEST(Utf8ConversionPerf) {
+  // Smoke test for converting strings to utf-8.
+  LocalContext context;
+  v8::HandleScope handle_scope(CcTest::isolate());
+  v8::Local<v8::String> ascii_string =
+      CompileRun("'abc'.repeat(1E6)").As<v8::String>();
+  v8::Local<v8::String> one_byte_string =
+      CompileRun("'\\u0255\\u0254\\u0253'.repeat(1E6)").As<v8::String>();
+  v8::Local<v8::String> two_byte_string =
+      CompileRun("'\\u2255\\u2254\\u2253'.repeat(1E6)").As<v8::String>();
+  v8::Local<v8::String> surrogate_string =
+      CompileRun("'\\u{12345}\\u2244'.repeat(1E6)").As<v8::String>();
+  int size = 1E7;
+  char* buffer = new char[4 * size];
+  {
+    v8::base::ElapsedTimer timer;
+    timer.Start();
+    ascii_string->WriteUtf8(CcTest::isolate(), buffer, size, nullptr);
+    printf("ascii string %0.3f\n", timer.Elapsed().InMillisecondsF());
+    timer.Stop();
+  }
+  {
+    v8::base::ElapsedTimer timer;
+    timer.Start();
+    ascii_string->WriteUtf8(CcTest::isolate(), buffer, size, nullptr);
+    printf("ascii string %0.3f\n", timer.Elapsed().InMillisecondsF());
+    timer.Stop();
+  }
+  {
+    v8::base::ElapsedTimer timer;
+    timer.Start();
+    ascii_string->WriteUtf8(CcTest::isolate(), buffer, 4 * size, nullptr);
+    printf("ascii string %0.3f\n", timer.Elapsed().InMillisecondsF());
+    timer.Stop();
+  }
+
+  {
+    v8::base::ElapsedTimer timer;
+    timer.Start();
+    one_byte_string->WriteUtf8(CcTest::isolate(), buffer, size, nullptr);
+    printf("one byte string %0.3f\n", timer.Elapsed().InMillisecondsF());
+    timer.Stop();
+  }
+  {
+    v8::base::ElapsedTimer timer;
+    timer.Start();
+    one_byte_string->WriteUtf8(CcTest::isolate(), buffer, size, nullptr);
+    printf("one byte string %0.3f\n", timer.Elapsed().InMillisecondsF());
+    timer.Stop();
+  }
+  {
+    v8::base::ElapsedTimer timer;
+    timer.Start();
+    one_byte_string->WriteUtf8(CcTest::isolate(), buffer, 4 * size, nullptr);
+    printf("one byte string %0.3f\n", timer.Elapsed().InMillisecondsF());
+    timer.Stop();
+  }
+
+  {
+    v8::base::ElapsedTimer timer;
+    timer.Start();
+    two_byte_string->WriteUtf8(CcTest::isolate(), buffer, size, nullptr);
+    printf("two byte string %0.3f\n", timer.Elapsed().InMillisecondsF());
+    timer.Stop();
+  }
+  {
+    v8::base::ElapsedTimer timer;
+    timer.Start();
+    two_byte_string->WriteUtf8(CcTest::isolate(), buffer, size, nullptr);
+    printf("two byte string %0.3f\n", timer.Elapsed().InMillisecondsF());
+    timer.Stop();
+  }
+  {
+    v8::base::ElapsedTimer timer;
+    timer.Start();
+    two_byte_string->WriteUtf8(CcTest::isolate(), buffer, 4 * size, nullptr);
+    printf("two byte string %0.3f\n", timer.Elapsed().InMillisecondsF());
+    timer.Stop();
+  }
+
+  {
+    v8::base::ElapsedTimer timer;
+    timer.Start();
+    surrogate_string->WriteUtf8(CcTest::isolate(), buffer, size, nullptr);
+    printf("surrogate string %0.3f\n", timer.Elapsed().InMillisecondsF());
+    timer.Stop();
+  }
+  {
+    v8::base::ElapsedTimer timer;
+    timer.Start();
+    surrogate_string->WriteUtf8(CcTest::isolate(), buffer, size, nullptr);
+    printf("surrogate string %0.3f\n", timer.Elapsed().InMillisecondsF());
+    timer.Stop();
+  }
+  {
+    v8::base::ElapsedTimer timer;
+    timer.Start();
+    surrogate_string->WriteUtf8(CcTest::isolate(), buffer, 4 * size, nullptr);
+    printf("surrogate string %0.3f\n", timer.Elapsed().InMillisecondsF());
+    timer.Stop();
+  }
+  delete[] buffer;
+}
 
 TEST(ExternalShortStringAdd) {
   LocalContext context;
@@ -1064,6 +1169,27 @@ TEST(ExternalShortStringAdd) {
   CHECK_EQ(0, CompileRun(source)->Int32Value(context.local()).FromJust());
 }
 
+TEST(ReplaceInvalidUtf8) {
+  LocalContext context;
+  v8::HandleScope handle_scope(CcTest::isolate());
+  v8::Local<v8::String> string = CompileRun("'ab\\ud800cd'").As<v8::String>();
+  char buffer[7];
+  memset(buffer, 0, 7);
+  int chars_written = 0;
+  int size = string->WriteUtf8(CcTest::isolate(), buffer, 7, &chars_written,
+                               v8::String::REPLACE_INVALID_UTF8);
+  CHECK_EQ(7, size);
+  CHECK_EQ(5, chars_written);
+  CHECK_EQ(0, memcmp("\x61\x62\xef\xbf\xbd\x63\x64", buffer, 7));
+
+  memset(buffer, 0, 7);
+  chars_written = 0;
+  size = string->WriteUtf8(CcTest::isolate(), buffer, 6, &chars_written,
+                           v8::String::REPLACE_INVALID_UTF8);
+  CHECK_EQ(6, size);
+  CHECK_EQ(4, chars_written);
+  CHECK_EQ(0, memcmp("\x61\x62\xef\xbf\xbd\x63", buffer, 6));
+}
 
 TEST(JSONStringifySliceMadeExternal) {
   if (!FLAG_string_slices) return;
@@ -1102,7 +1228,6 @@ TEST(JSONStringifySliceMadeExternal) {
 }
 
 TEST(JSONStringifyWellFormed) {
-  FLAG_harmony_json_stringify = true;
   CcTest::InitializeVM();
   v8::HandleScope handle_scope(CcTest::isolate());
   v8::Local<v8::Context> context = CcTest::isolate()->GetCurrentContext();
@@ -1273,7 +1398,8 @@ class OneByteVectorResource : public v8::String::ExternalOneByteStringResource {
       : data_(vector) {}
   ~OneByteVectorResource() override = default;
   size_t length() const override { return data_.length(); }
-  const char* data() const override { return data_.start(); }
+  const char* data() const override { return data_.begin(); }
+
  private:
   i::Vector<const char> data_;
 };
@@ -1300,7 +1426,7 @@ TEST(InternalizeExternal) {
     Handle<String> string = v8::Utils::OpenHandle(*ext_string);
     CHECK(string->IsExternalString());
     CHECK(!string->IsInternalizedString());
-    CHECK(!i::Heap::InNewSpace(*string));
+    CHECK(!i::Heap::InYoungGeneration(*string));
     CHECK_EQ(
         isolate->factory()->string_table()->LookupStringIfExists_NoAllocate(
             isolate, string->ptr()),
@@ -1308,7 +1434,7 @@ TEST(InternalizeExternal) {
     factory->InternalizeName(string);
     CHECK(string->IsExternalString());
     CHECK(string->IsInternalizedString());
-    CHECK(!i::Heap::InNewSpace(*string));
+    CHECK(!i::Heap::InYoungGeneration(*string));
   }
   CcTest::CollectGarbage(i::OLD_SPACE);
   CcTest::CollectGarbage(i::OLD_SPACE);
@@ -1580,7 +1706,6 @@ TEST(InvalidExternalString) {
   }
 }
 
-
 #define INVALID_STRING_TEST(FUN, TYPE)                                         \
   TEST(StringOOM##FUN) {                                                       \
     CcTest::InitializeVM();                                                    \
@@ -1590,9 +1715,9 @@ TEST(InvalidExternalString) {
     static const int invalid = String::kMaxLength + 1;                         \
     HandleScope scope(isolate);                                                \
     Vector<TYPE> dummy = Vector<TYPE>::New(invalid);                           \
-    memset(dummy.start(), 0x0, dummy.length() * sizeof(TYPE));                 \
+    memset(dummy.begin(), 0x0, dummy.length() * sizeof(TYPE));                 \
     CHECK(isolate->factory()->FUN(Vector<const TYPE>::cast(dummy)).is_null()); \
-    memset(dummy.start(), 0x20, dummy.length() * sizeof(TYPE));                \
+    memset(dummy.begin(), 0x20, dummy.length() * sizeof(TYPE));                \
     CHECK(isolate->has_pending_exception());                                   \
     isolate->clear_pending_exception();                                        \
     dummy.Dispose();                                                           \
@@ -1613,8 +1738,8 @@ TEST(FormatMessage) {
   Handle<String> arg1 = isolate->factory()->NewStringFromAsciiChecked("arg1");
   Handle<String> arg2 = isolate->factory()->NewStringFromAsciiChecked("arg2");
   Handle<String> result =
-      MessageFormatter::FormatMessage(
-          isolate, MessageTemplate::kPropertyNotFunction, arg0, arg1, arg2)
+      MessageFormatter::Format(isolate, MessageTemplate::kPropertyNotFunction,
+                               arg0, arg1, arg2)
           .ToHandleChecked();
   Handle<String> expected = isolate->factory()->NewStringFromAsciiChecked(
       "'arg0' returned for property 'arg1' of object 'arg2' is not a function");
@@ -1692,7 +1817,7 @@ TEST(ExternalStringIndexOf) {
             ->NewStringFromOneByte(Vector<const uint8_t>(                      \
                 reinterpret_cast<const uint8_t*>(buf), len))                   \
             .ToHandleChecked();                                                \
-    CHECK(Heap::InNewSpace(*main_string));                                     \
+    CHECK(Heap::InYoungGeneration(*main_string));                              \
     /* Next allocation will cause GC. */                                       \
     heap::SimulateFullSpace(CcTest::i_isolate()->heap()->new_space());         \
     /* Offset by two to check substring-ing. */                                \
@@ -1813,7 +1938,7 @@ TEST(Regress876759) {
     Handle<SeqTwoByteString> raw =
         factory->NewRawTwoByteString(kLength).ToHandleChecked();
     DisallowHeapAllocation no_gc;
-    CopyChars(raw->GetChars(), two_byte_buf, kLength);
+    CopyChars(raw->GetChars(no_gc), two_byte_buf, kLength);
     parent = raw;
   }
   CHECK(parent->IsTwoByteRepresentation());
@@ -1832,9 +1957,8 @@ TEST(Regress876759) {
   CHECK(grandparent->IsOneByteRepresentation());
   CHECK(parent->IsTwoByteRepresentation());
   CHECK(sliced->IsTwoByteRepresentation());
-  // The *Underneath versions return the correct representation.
-  CHECK(sliced->IsOneByteRepresentationUnderneath());
-  CHECK(!sliced->IsTwoByteRepresentationUnderneath());
+  // The *Underneath version returns the correct representation.
+  CHECK(String::IsOneByteRepresentationUnderneath(*sliced));
 }
 
 }  // namespace test_strings

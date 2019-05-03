@@ -8,12 +8,14 @@
 #include "src/conversions.h"
 #include "src/debug/debug.h"
 #include "src/field-type.h"
+#include "src/hash-seed-inl.h"
+#include "src/heap/heap-inl.h"  // For string_table().
 #include "src/message-template.h"
 #include "src/objects-inl.h"
 #include "src/objects/hash-table-inl.h"
 #include "src/property-descriptor.h"
 #include "src/string-hasher.h"
-#include "src/transitions.h"
+#include "src/transitions-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -45,6 +47,101 @@ class VectorSegment {
  private:
   Container& container_;
   const typename Container::size_type begin_;
+};
+
+constexpr JsonToken GetOneCharToken(uint8_t c) {
+  // clang-format off
+  return
+     c == '"' ? JsonToken::STRING :
+     IsDecimalDigit(c) ?  JsonToken::NUMBER :
+     c == '-' ? JsonToken::NEGATIVE_NUMBER :
+     c == '[' ? JsonToken::LBRACK :
+     c == '{' ? JsonToken::LBRACE :
+     c == ']' ? JsonToken::RBRACK :
+     c == '}' ? JsonToken::RBRACE :
+     c == 't' ? JsonToken::TRUE_LITERAL :
+     c == 'f' ? JsonToken::FALSE_LITERAL :
+     c == 'n' ? JsonToken::NULL_LITERAL :
+     c == ' ' ? JsonToken::WHITESPACE :
+     c == '\t' ? JsonToken::WHITESPACE :
+     c == '\r' ? JsonToken::WHITESPACE :
+     c == '\n' ? JsonToken::WHITESPACE :
+     c == ':' ? JsonToken::COLON :
+     c == ',' ? JsonToken::COMMA :
+     JsonToken::ILLEGAL;
+  // clang-format on
+}
+
+// Table of one-character tokens, by character (0x00..0xFF only).
+static const constexpr JsonToken one_char_tokens[256] = {
+#define CALL_GET_SCAN_FLAGS(N) GetOneCharToken(N),
+    INT_0_TO_127_LIST(CALL_GET_SCAN_FLAGS)
+#undef CALL_GET_SCAN_FLAGS
+#define CALL_GET_SCAN_FLAGS(N) GetOneCharToken(128 + N),
+        INT_0_TO_127_LIST(CALL_GET_SCAN_FLAGS)
+#undef CALL_GET_SCAN_FLAGS
+};
+
+enum class EscapeKind : uint8_t {
+  kIllegal,
+  kSelf,
+  kBackspace,
+  kTab,
+  kNewLine,
+  kFormFeed,
+  kCarriageReturn,
+  kUnicode
+};
+
+using EscapeKindField = BitField8<EscapeKind, 0, 3>;
+using MayTerminateStringField = BitField8<bool, EscapeKindField::kNext, 1>;
+using NumberPartField = BitField8<bool, MayTerminateStringField::kNext, 1>;
+
+constexpr bool MayTerminateString(uint8_t flags) {
+  return MayTerminateStringField::decode(flags);
+}
+
+constexpr EscapeKind GetEscapeKind(uint8_t flags) {
+  return EscapeKindField::decode(flags);
+}
+
+constexpr bool IsNumberPart(uint8_t flags) {
+  return NumberPartField::decode(flags);
+}
+
+constexpr uint8_t GetScanFlags(uint8_t c) {
+  // clang-format off
+  return (c == 'b' ? EscapeKindField::encode(EscapeKind::kBackspace)
+          : c == 't' ? EscapeKindField::encode(EscapeKind::kTab)
+          : c == 'n' ? EscapeKindField::encode(EscapeKind::kNewLine)
+          : c == 'f' ? EscapeKindField::encode(EscapeKind::kFormFeed)
+          : c == 'r' ? EscapeKindField::encode(EscapeKind::kCarriageReturn)
+          : c == 'u' ? EscapeKindField::encode(EscapeKind::kUnicode)
+          : c == '"' ? EscapeKindField::encode(EscapeKind::kSelf)
+          : c == '\\' ? EscapeKindField::encode(EscapeKind::kSelf)
+          : c == '/' ? EscapeKindField::encode(EscapeKind::kSelf)
+          : EscapeKindField::encode(EscapeKind::kIllegal)) |
+         (c < 0x20 ? MayTerminateStringField::encode(true)
+          : c == '"' ? MayTerminateStringField::encode(true)
+          : c == '\\' ? MayTerminateStringField::encode(true)
+          : MayTerminateStringField::encode(false)) |
+         NumberPartField::encode(c == '.' ||
+                                 c == 'e' ||
+                                 c == 'E' ||
+                                 IsDecimalDigit(c) ||
+                                 c == '-' ||
+                                 c == '+');
+  // clang-format on
+}
+
+// Table of one-character scan flags, by character (0x00..0xFF only).
+static const constexpr uint8_t character_scan_flags[256] = {
+#define CALL_GET_SCAN_FLAGS(N) GetScanFlags(N),
+    INT_0_TO_127_LIST(CALL_GET_SCAN_FLAGS)
+#undef CALL_GET_SCAN_FLAGS
+#define CALL_GET_SCAN_FLAGS(N) GetScanFlags(128 + N),
+        INT_0_TO_127_LIST(CALL_GET_SCAN_FLAGS)
+#undef CALL_GET_SCAN_FLAGS
 };
 
 }  // namespace
@@ -126,307 +223,283 @@ bool JsonParseInternalizer::RecurseAndApply(Handle<JSReceiver> holder,
     desc.set_enumerable(true);
     desc.set_writable(true);
     change_result = JSReceiver::DefineOwnProperty(isolate_, holder, name, &desc,
-                                                  kDontThrow);
+                                                  Just(kDontThrow));
   }
   MAYBE_RETURN(change_result, false);
   return true;
 }
 
-template <bool seq_one_byte>
-JsonParser<seq_one_byte>::JsonParser(Isolate* isolate, Handle<String> source)
-    : source_(source),
-      source_length_(source->length()),
-      isolate_(isolate),
+template <typename Char>
+JsonParser<Char>::JsonParser(Isolate* isolate, Handle<String> source)
+    : isolate_(isolate),
       zone_(isolate_->allocator(), ZONE_NAME),
-      object_constructor_(isolate_->native_context()->object_function(),
-                          isolate_),
-      position_(-1),
+      hash_seed_(HashSeed(isolate)),
+      object_constructor_(isolate_->object_function()),
+      original_source_(source),
       properties_(&zone_) {
-  source_ = String::Flatten(isolate, source_);
-  pretenure_ = (source_length_ >= kPretenureTreshold) ? TENURED : NOT_TENURED;
+  size_t start = 0;
+  size_t length = source->length();
+  if (source->IsSlicedString()) {
+    SlicedString string = SlicedString::cast(*source);
+    start = string.offset();
+    String parent = string.parent();
+    if (parent.IsThinString()) parent = ThinString::cast(parent).actual();
+    source_ = handle(parent, isolate);
+  } else {
+    source_ = String::Flatten(isolate, source);
+  }
 
-  // Optimized fast case where we only have Latin1 characters.
-  if (seq_one_byte) {
-    seq_source_ = Handle<SeqOneByteString>::cast(source_);
+  if (StringShape(*source_).IsExternal()) {
+    chars_ =
+        static_cast<const Char*>(SeqExternalString::cast(*source_)->GetChars());
+    chars_may_relocate_ = false;
+  } else {
+    DisallowHeapAllocation no_gc;
+    isolate->heap()->AddGCEpilogueCallback(UpdatePointersCallback,
+                                           v8::kGCTypeAll, this);
+    chars_ = SeqString::cast(*source_)->GetChars(no_gc);
+    chars_may_relocate_ = true;
+  }
+  cursor_ = chars_ + start;
+  end_ = cursor_ + length;
+
+  allocation_ = (source->length() >= kPretenureTreshold)
+                    ? AllocationType::kOld
+                    : AllocationType::kYoung;
+}
+
+template <typename Char>
+void JsonParser<Char>::ReportUnexpectedCharacter(JsonToken token) {
+  // Some exception (for example stack overflow) is already pending.
+  if (isolate_->has_pending_exception()) return;
+
+  // Parse failed. Current character is the unexpected token.
+  Factory* factory = this->factory();
+  MessageTemplate message;
+  Handle<Object> arg1 = Handle<Smi>(Smi::FromInt(position()), isolate());
+  Handle<Object> arg2;
+
+  switch (token) {
+    case JsonToken::EOS:
+      message = MessageTemplate::kJsonParseUnexpectedEOS;
+      break;
+    case JsonToken::NUMBER:
+    case JsonToken::NEGATIVE_NUMBER:
+      message = MessageTemplate::kJsonParseUnexpectedTokenNumber;
+      break;
+    case JsonToken::STRING:
+      message = MessageTemplate::kJsonParseUnexpectedTokenString;
+      break;
+    default:
+      message = MessageTemplate::kJsonParseUnexpectedToken;
+      arg2 = arg1;
+      arg1 = factory->LookupSingleCharacterStringFromCode(*cursor_);
+      break;
+  }
+
+  Handle<Script> script(factory->NewScript(original_source_));
+  if (isolate()->NeedsSourcePositionsForProfiling()) {
+    Script::InitLineEnds(script);
+  }
+  // We should sent compile error event because we compile JSON object in
+  // separated source file.
+  isolate()->debug()->OnCompileError(script);
+  MessageLocation location(script, position(), position() + 1);
+  Handle<Object> error = factory->NewSyntaxError(message, arg1, arg2);
+  isolate()->Throw(*error, &location);
+
+  // Move the cursor to the end so we won't be able to proceed parsing.
+  cursor_ = end_;
+}
+
+template <typename Char>
+JsonParser<Char>::~JsonParser() {
+  if (StringShape(*source_).IsExternal()) {
+    // Check that the string shape hasn't changed. Otherwise our GC hooks are
+    // broken.
+    SeqExternalString::cast(*source_);
+  } else {
+    // Check that the string shape hasn't changed. Otherwise our GC hooks are
+    // broken.
+    SeqString::cast(*source_);
+    isolate()->heap()->RemoveGCEpilogueCallback(UpdatePointersCallback, this);
   }
 }
 
-template <bool seq_one_byte>
-MaybeHandle<Object> JsonParser<seq_one_byte>::ParseJson() {
-  // Advance to the first character (possibly EOS)
-  AdvanceSkipWhitespace();
+template <typename Char>
+MaybeHandle<Object> JsonParser<Char>::ParseJson() {
   Handle<Object> result = ParseJsonValue();
-  if (result.is_null() || c0_ != kEndOfString) {
-    // Some exception (for example stack overflow) is already pending.
-    if (isolate_->has_pending_exception()) return Handle<Object>::null();
-
-    // Parse failed. Current character is the unexpected token.
-    Factory* factory = this->factory();
-    MessageTemplate message;
-    Handle<Object> arg1 = Handle<Smi>(Smi::FromInt(position_), isolate());
-    Handle<Object> arg2;
-
-    switch (c0_) {
-      case kEndOfString:
-        message = MessageTemplate::kJsonParseUnexpectedEOS;
-        break;
-      case '-':
-      case '0':
-      case '1':
-      case '2':
-      case '3':
-      case '4':
-      case '5':
-      case '6':
-      case '7':
-      case '8':
-      case '9':
-        message = MessageTemplate::kJsonParseUnexpectedTokenNumber;
-        break;
-      case '"':
-        message = MessageTemplate::kJsonParseUnexpectedTokenString;
-        break;
-      default:
-        message = MessageTemplate::kJsonParseUnexpectedToken;
-        arg2 = arg1;
-        arg1 = factory->LookupSingleCharacterStringFromCode(c0_);
-        break;
-    }
-
-    Handle<Script> script(factory->NewScript(source_));
-    if (isolate()->NeedsSourcePositionsForProfiling()) {
-      Script::InitLineEnds(script);
-    }
-    // We should sent compile error event because we compile JSON object in
-    // separated source file.
-    isolate()->debug()->OnCompileError(script);
-    MessageLocation location(script, position_, position_ + 1);
-    Handle<Object> error = factory->NewSyntaxError(message, arg1, arg2);
-    return isolate()->template Throw<Object>(error, &location);
-  }
+  if (!Check(JsonToken::EOS)) ReportUnexpectedCharacter(peek());
+  if (isolate_->has_pending_exception()) return MaybeHandle<Object>();
   return result;
 }
 
 MaybeHandle<Object> InternalizeJsonProperty(Handle<JSObject> holder,
                                             Handle<String> key);
 
-template <bool seq_one_byte>
-void JsonParser<seq_one_byte>::Advance() {
-  position_++;
-  if (position_ >= source_length_) {
-    c0_ = kEndOfString;
-  } else if (seq_one_byte) {
-    c0_ = seq_source_->SeqOneByteStringGet(position_);
-  } else {
-    c0_ = source_->Get(position_);
-  }
+template <typename Char>
+Char JsonParser<Char>::NextCharacter() {
+  advance();
+  if (V8_UNLIKELY(is_at_end())) return kEndOfString;
+  return *cursor_;
 }
 
-template <bool seq_one_byte>
-void JsonParser<seq_one_byte>::AdvanceSkipWhitespace() {
-  do {
-    Advance();
-  } while (c0_ == ' ' || c0_ == '\t' || c0_ == '\n' || c0_ == '\r');
-}
+template <typename Char>
+void JsonParser<Char>::SkipWhitespace() {
+  next_ = JsonToken::EOS;
 
-template <bool seq_one_byte>
-void JsonParser<seq_one_byte>::SkipWhitespace() {
-  while (c0_ == ' ' || c0_ == '\t' || c0_ == '\n' || c0_ == '\r') {
-    Advance();
-  }
-}
-
-template <bool seq_one_byte>
-uc32 JsonParser<seq_one_byte>::AdvanceGetChar() {
-  Advance();
-  return c0_;
-}
-
-template <bool seq_one_byte>
-bool JsonParser<seq_one_byte>::MatchSkipWhiteSpace(uc32 c) {
-  if (c0_ == c) {
-    AdvanceSkipWhitespace();
-    return true;
-  }
-  return false;
-}
-
-template <bool seq_one_byte>
-bool JsonParser<seq_one_byte>::ParseJsonString(Handle<String> expected) {
-  int length = expected->length();
-  if (source_->length() - position_ - 1 > length) {
-    DisallowHeapAllocation no_gc;
-    String::FlatContent content = expected->GetFlatContent();
-    if (content.IsOneByte()) {
-      DCHECK_EQ('"', c0_);
-      const uint8_t* input_chars = seq_source_->GetChars() + position_ + 1;
-      const uint8_t* expected_chars = content.ToOneByteVector().start();
-      for (int i = 0; i < length; i++) {
-        uint8_t c0 = input_chars[i];
-        if (c0 != expected_chars[i] || c0 == '"' || c0 < 0x20 || c0 == '\\') {
-          return false;
-        }
-      }
-      if (input_chars[length] == '"') {
-        position_ = position_ + length + 1;
-        AdvanceSkipWhitespace();
-        return true;
-      }
-    }
-  }
-  return false;
+  cursor_ = std::find_if(cursor_, end_, [this](Char c) {
+    JsonToken current = V8_LIKELY(c <= unibrow::Latin1::kMaxChar)
+                            ? one_char_tokens[c]
+                            : JsonToken::ILLEGAL;
+    bool result = current != JsonToken::WHITESPACE;
+    if (result) next_ = current;
+    return result;
+  });
 }
 
 // Parse any JSON value.
-template <bool seq_one_byte>
-Handle<Object> JsonParser<seq_one_byte>::ParseJsonValue() {
+template <typename Char>
+Handle<Object> JsonParser<Char>::ParseJsonValue() {
   StackLimitCheck stack_check(isolate_);
-  if (stack_check.HasOverflowed()) {
-    isolate_->StackOverflow();
-    return Handle<Object>::null();
-  }
 
-  if (stack_check.InterruptRequested() &&
-      isolate_->stack_guard()->HandleInterrupts()->IsException(isolate_)) {
-    return Handle<Object>::null();
-  }
-
-  if (c0_ == '"') return ParseJsonString();
-  if ((c0_ >= '0' && c0_ <= '9') || c0_ == '-') return ParseJsonNumber();
-  if (c0_ == '{') return ParseJsonObject();
-  if (c0_ == '[') return ParseJsonArray();
-  if (c0_ == 'f') {
-    if (AdvanceGetChar() == 'a' && AdvanceGetChar() == 'l' &&
-        AdvanceGetChar() == 's' && AdvanceGetChar() == 'e') {
-      AdvanceSkipWhitespace();
-      return factory()->false_value();
+  if (V8_UNLIKELY(stack_check.InterruptRequested())) {
+    if (stack_check.HasOverflowed()) {
+      if (!isolate_->has_pending_exception()) isolate_->StackOverflow();
+      return factory()->undefined_value();
     }
-    return ReportUnexpectedCharacter();
+
+    if (isolate_->stack_guard()->HandleInterrupts()->IsException(isolate_)) {
+      return factory()->undefined_value();
+    }
   }
-  if (c0_ == 't') {
-    if (AdvanceGetChar() == 'r' && AdvanceGetChar() == 'u' &&
-        AdvanceGetChar() == 'e') {
-      AdvanceSkipWhitespace();
+
+  SkipWhitespace();
+
+  switch (peek()) {
+    case JsonToken::STRING:
+      Consume(JsonToken::STRING);
+      return ParseJsonString(false);
+    case JsonToken::NUMBER:
+      return ParseJsonNumber(1, cursor_);
+    case JsonToken::NEGATIVE_NUMBER:
+      advance();
+      if (is_at_end()) {
+        ReportUnexpectedCharacter(JsonToken::EOS);
+        return handle(Smi::FromInt(0), isolate_);
+      }
+      return ParseJsonNumber(-1, cursor_ - 1);
+    case JsonToken::LBRACE:
+      return ParseJsonObject();
+    case JsonToken::LBRACK:
+      return ParseJsonArray();
+    case JsonToken::TRUE_LITERAL:
+      ScanLiteral("true");
       return factory()->true_value();
-    }
-    return ReportUnexpectedCharacter();
-  }
-  if (c0_ == 'n') {
-    if (AdvanceGetChar() == 'u' && AdvanceGetChar() == 'l' &&
-        AdvanceGetChar() == 'l') {
-      AdvanceSkipWhitespace();
+    case JsonToken::FALSE_LITERAL:
+      ScanLiteral("false");
+      return factory()->false_value();
+    case JsonToken::NULL_LITERAL:
+      ScanLiteral("null");
       return factory()->null_value();
-    }
-    return ReportUnexpectedCharacter();
+
+    case JsonToken::COLON:
+    case JsonToken::COMMA:
+    case JsonToken::ILLEGAL:
+    case JsonToken::RBRACE:
+    case JsonToken::RBRACK:
+    case JsonToken::EOS:
+      ReportUnexpectedCharacter(peek());
+      return factory()->undefined_value();
+
+    case JsonToken::WHITESPACE:
+      UNREACHABLE();
   }
-  return ReportUnexpectedCharacter();
 }
 
-template <bool seq_one_byte>
-ParseElementResult JsonParser<seq_one_byte>::ParseElement(
-    Handle<JSObject> json_object) {
+template <typename Char>
+bool JsonParser<Char>::ParseElement(Handle<JSObject> json_object) {
   uint32_t index = 0;
-  // Maybe an array index, try to parse it.
-  if (c0_ == '0') {
-    // With a leading zero, the string has to be "0" only to be an index.
-    Advance();
-  } else {
-    do {
-      int d = c0_ - '0';
-      if (index > 429496729U - ((d + 3) >> 3)) break;
-      index = (index * 10) + d;
-      Advance();
-    } while (IsDecimalDigit(c0_));
-  }
-
-  if (c0_ == '"') {
-    // Successfully parsed index, parse and store element.
-    AdvanceSkipWhitespace();
-
-    if (c0_ == ':') {
-      AdvanceSkipWhitespace();
-      Handle<Object> value = ParseJsonValue();
-      if (!value.is_null()) {
-        JSObject::SetOwnElementIgnoreAttributes(json_object, index, value, NONE)
-            .Assert();
-        return kElementFound;
-      } else {
-        return kNullHandle;
-      }
+  {
+    // |cursor_| will only be updated if the key ends up being an index.
+    DisallowHeapAllocation no_gc;
+    const Char* cursor = cursor_;
+    // Maybe an array index, try to parse it.
+    if (*cursor == '0') {
+      // With a leading zero, the string has to be "0" only to be an index.
+      cursor++;
+    } else {
+      cursor = std::find_if(cursor, end_, [&index](Char c) {
+        return !TryAddIndexChar(&index, c);
+      });
     }
+
+    if (V8_UNLIKELY(cursor == end_)) {
+      ReportUnexpectedCharacter(JsonToken::EOS);
+      return true;
+    }
+
+    if (*cursor++ != '"') return false;
+    cursor_ = cursor;
   }
-  return kElementNotFound;
+
+  ExpectNext(JsonToken::COLON);
+  Handle<Object> value = ParseJsonValue();
+  JSObject::SetOwnElementIgnoreAttributes(json_object, index, value, NONE)
+      .Assert();
+  return true;
 }
 
 // Parse a JSON object. Position must be right at '{'.
-template <bool seq_one_byte>
-Handle<Object> JsonParser<seq_one_byte>::ParseJsonObject() {
+template <typename Char>
+Handle<Object> JsonParser<Char>::ParseJsonObject() {
   HandleScope scope(isolate());
   Handle<JSObject> json_object =
-      factory()->NewJSObject(object_constructor(), pretenure_);
+      factory()->NewJSObject(object_constructor(), allocation_);
   Handle<Map> map(json_object->map(), isolate());
   int descriptor = 0;
   VectorSegment<ZoneVector<Handle<Object>>> properties(&properties_);
-  DCHECK_EQ(c0_, '{');
+  Consume(JsonToken::LBRACE);
 
   bool transitioning = true;
 
-  AdvanceSkipWhitespace();
-  if (c0_ != '}') {
+  if (!Check(JsonToken::RBRACE)) {
     do {
-      if (c0_ != '"') return ReportUnexpectedCharacter();
-
-      int start_position = position_;
-      Advance();
-
-      if (IsDecimalDigit(c0_)) {
-        ParseElementResult element_result = ParseElement(json_object);
-        if (element_result == kNullHandle) return Handle<Object>::null();
-        if (element_result == kElementFound) continue;
+      ExpectNext(JsonToken::STRING);
+      if (is_at_end() ||
+          (IsDecimalDigit(*cursor_) && ParseElement(json_object))) {
+        continue;
       }
-      // Not an index, fallback to the slow path.
-
-      position_ = start_position;
-#ifdef DEBUG
-      c0_ = '"';
-#endif
-
-      Handle<String> key;
-      Handle<Object> value;
 
       // Try to follow existing transitions as long as possible. Once we stop
       // transitioning, no transition can be found anymore.
       DCHECK(transitioning);
+      Handle<Map> target;
+
       // First check whether there is a single expected transition. If so, try
       // to parse it first.
-      bool follow_expected = false;
-      Handle<Map> target;
-      if (seq_one_byte) {
+      Handle<String> expected;
+      {
         DisallowHeapAllocation no_gc;
         TransitionsAccessor transitions(isolate(), *map, &no_gc);
-        key = transitions.ExpectedTransitionKey();
-        follow_expected = !key.is_null() && ParseJsonString(key);
-        // If the expected transition hits, follow it.
-        if (follow_expected) {
-          target = transitions.ExpectedTransitionTarget();
-        }
+        expected = transitions.ExpectedTransitionKey();
       }
-      if (!follow_expected) {
-        // If the expected transition failed, parse an internalized string and
-        // try to find a matching transition.
-        key = ParseJsonString();
-        if (key.is_null()) return ReportUnexpectedCharacter();
-
+      Handle<String> key = ParseJsonString(true, expected);
+      // If the expected transition hits, follow it.
+      if (key.is_identical_to(expected)) {
+        DisallowHeapAllocation no_gc;
+        target = TransitionsAccessor(isolate(), *map, &no_gc)
+                     .ExpectedTransitionTarget();
+      } else {
         // If a transition was found, follow it and continue.
         transitioning = TransitionsAccessor(isolate(), map)
                             .FindTransitionToField(key)
                             .ToHandle(&target);
       }
-      if (c0_ != ':') return ReportUnexpectedCharacter();
 
-      AdvanceSkipWhitespace();
-      value = ParseJsonValue();
-      if (value.is_null()) return ReportUnexpectedCharacter();
+      ExpectNext(JsonToken::COLON);
+
+      Handle<Object> value = ParseJsonValue();
 
       if (transitioning) {
         PropertyDetails details =
@@ -463,40 +536,23 @@ Handle<Object> JsonParser<seq_one_byte>::ParseJsonObject() {
 
       JSObject::DefinePropertyOrElementIgnoreAttributes(json_object, key, value)
           .Check();
-    } while (transitioning && MatchSkipWhiteSpace(','));
+    } while (transitioning && Check(JsonToken::COMMA));
 
     // If we transitioned until the very end, transition the map now.
     if (transitioning) {
       CommitStateToJsonObject(json_object, map, properties.GetVector());
     } else {
-      while (MatchSkipWhiteSpace(',')) {
+      while (Check(JsonToken::COMMA)) {
         HandleScope local_scope(isolate());
-        if (c0_ != '"') return ReportUnexpectedCharacter();
-
-        int start_position = position_;
-        Advance();
-
-        if (IsDecimalDigit(c0_)) {
-          ParseElementResult element_result = ParseElement(json_object);
-          if (element_result == kNullHandle) return Handle<Object>::null();
-          if (element_result == kElementFound) continue;
+        ExpectNext(JsonToken::STRING);
+        if (is_at_end() ||
+            (IsDecimalDigit(*cursor_) && ParseElement(json_object))) {
+          continue;
         }
-        // Not an index, fallback to the slow path.
 
-        position_ = start_position;
-#ifdef DEBUG
-        c0_ = '"';
-#endif
-
-        Handle<String> key;
-        Handle<Object> value;
-
-        key = ParseJsonString();
-        if (key.is_null() || c0_ != ':') return ReportUnexpectedCharacter();
-
-        AdvanceSkipWhitespace();
-        value = ParseJsonValue();
-        if (value.is_null()) return ReportUnexpectedCharacter();
+        Handle<String> key = ParseJsonString(true);
+        ExpectNext(JsonToken::COLON);
+        Handle<Object> value = ParseJsonValue();
 
         JSObject::DefinePropertyOrElementIgnoreAttributes(json_object, key,
                                                           value)
@@ -504,18 +560,15 @@ Handle<Object> JsonParser<seq_one_byte>::ParseJsonObject() {
       }
     }
 
-    if (c0_ != '}') {
-      return ReportUnexpectedCharacter();
-    }
+    Expect(JsonToken::RBRACE);
   }
-  AdvanceSkipWhitespace();
   return scope.CloseAndEscape(json_object);
 }
 
-template <bool seq_one_byte>
-void JsonParser<seq_one_byte>::CommitStateToJsonObject(
+template <typename Char>
+void JsonParser<Char>::CommitStateToJsonObject(
     Handle<JSObject> json_object, Handle<Map> map,
-    Vector<const Handle<Object>> properties) {
+    const Vector<const Handle<Object>>& properties) {
   JSObject::AllocateStorageForMap(json_object, map);
   DCHECK(!json_object->map()->is_dictionary_map());
 
@@ -530,10 +583,10 @@ void JsonParser<seq_one_byte>::CommitStateToJsonObject(
 
 class ElementKindLattice {
  private:
-  enum {
-    SMI_ELEMENTS,
-    NUMBER_ELEMENTS,
-    OBJECT_ELEMENTS,
+  enum Kind {
+    SMI_ELEMENTS = 0,
+    NUMBER_ELEMENTS = 1,
+    OBJECT_ELEMENTS = (1 << 1) | NUMBER_ELEMENTS,
   };
 
  public:
@@ -543,9 +596,8 @@ class ElementKindLattice {
     if (o->IsSmi()) {
       return;
     } else if (o->IsHeapNumber()) {
-      if (value_ < NUMBER_ELEMENTS) value_ = NUMBER_ELEMENTS;
+      value_ = static_cast<Kind>(value_ | NUMBER_ELEMENTS);
     } else {
-      DCHECK(!o->IsNumber());
       value_ = OBJECT_ELEMENTS;
     }
   }
@@ -558,38 +610,30 @@ class ElementKindLattice {
         return PACKED_DOUBLE_ELEMENTS;
       case OBJECT_ELEMENTS:
         return PACKED_ELEMENTS;
-      default:
-        UNREACHABLE();
-        return PACKED_ELEMENTS;
     }
   }
 
  private:
-  int value_;
+  Kind value_;
 };
 
 // Parse a JSON array. Position must be right at '['.
-template <bool seq_one_byte>
-Handle<Object> JsonParser<seq_one_byte>::ParseJsonArray() {
+template <typename Char>
+Handle<Object> JsonParser<Char>::ParseJsonArray() {
   HandleScope scope(isolate());
-  ZoneVector<Handle<Object>> elements(zone());
-  DCHECK_EQ(c0_, '[');
+  ZoneVector<Handle<Object>> elements(&zone_);
+  Consume(JsonToken::LBRACK);
 
   ElementKindLattice lattice;
 
-  AdvanceSkipWhitespace();
-  if (c0_ != ']') {
+  if (!Check(JsonToken::RBRACK)) {
     do {
       Handle<Object> element = ParseJsonValue();
-      if (element.is_null()) return ReportUnexpectedCharacter();
       elements.push_back(element);
       lattice.Update(element);
-    } while (MatchSkipWhiteSpace(','));
-    if (c0_ != ']') {
-      return ReportUnexpectedCharacter();
-    }
+    } while (Check(JsonToken::COMMA));
+    Expect(JsonToken::RBRACK);
   }
-  AdvanceSkipWhitespace();
 
   // Allocate a fixed array with all the elements.
 
@@ -601,18 +645,18 @@ Handle<Object> JsonParser<seq_one_byte>::ParseJsonArray() {
     case PACKED_ELEMENTS:
     case PACKED_SMI_ELEMENTS: {
       Handle<FixedArray> elems =
-          factory()->NewFixedArray(elements_size, pretenure_);
+          factory()->NewFixedArray(elements_size, allocation_);
       for (int i = 0; i < elements_size; i++) elems->set(i, *elements[i]);
-      json_array = factory()->NewJSArrayWithElements(elems, kind, pretenure_);
+      json_array = factory()->NewJSArrayWithElements(elems, kind, allocation_);
       break;
     }
     case PACKED_DOUBLE_ELEMENTS: {
       Handle<FixedDoubleArray> elems = Handle<FixedDoubleArray>::cast(
-          factory()->NewFixedDoubleArray(elements_size, pretenure_));
+          factory()->NewFixedDoubleArray(elements_size, allocation_));
       for (int i = 0; i < elements_size; i++) {
         elems->set(i, elements[i]->Number());
       }
-      json_array = factory()->NewJSArrayWithElements(elems, kind, pretenure_);
+      json_array = factory()->NewJSArrayWithElements(elems, kind, allocation_);
       break;
     }
     default:
@@ -622,333 +666,318 @@ Handle<Object> JsonParser<seq_one_byte>::ParseJsonArray() {
   return scope.CloseAndEscape(json_array);
 }
 
-template <bool seq_one_byte>
-Handle<Object> JsonParser<seq_one_byte>::ParseJsonNumber() {
-  bool negative = false;
-  int beg_pos = position_;
-  if (c0_ == '-') {
-    Advance();
-    negative = true;
-  }
-  if (c0_ == '0') {
-    Advance();
-    // Prefix zero is only allowed if it's the only digit before
-    // a decimal point or exponent.
-    if (IsDecimalDigit(c0_)) return ReportUnexpectedCharacter();
-  } else {
-    int i = 0;
-    int digits = 0;
-    if (c0_ < '1' || c0_ > '9') return ReportUnexpectedCharacter();
-    do {
-      i = i * 10 + c0_ - '0';
-      digits++;
-      Advance();
-    } while (IsDecimalDigit(c0_));
-    if (c0_ != '.' && c0_ != 'e' && c0_ != 'E' && digits < 10) {
-      SkipWhitespace();
-      return Handle<Smi>(Smi::FromInt((negative ? -i : i)), isolate());
-    }
-  }
-  if (c0_ == '.') {
-    Advance();
-    if (!IsDecimalDigit(c0_)) return ReportUnexpectedCharacter();
-    do {
-      Advance();
-    } while (IsDecimalDigit(c0_));
-  }
-  if (AsciiAlphaToLower(c0_) == 'e') {
-    Advance();
-    if (c0_ == '-' || c0_ == '+') Advance();
-    if (!IsDecimalDigit(c0_)) return ReportUnexpectedCharacter();
-    do {
-      Advance();
-    } while (IsDecimalDigit(c0_));
-  }
-  int length = position_ - beg_pos;
+template <typename Char>
+Handle<Object> JsonParser<Char>::ParseJsonNumber(int sign, const Char* start) {
   double number;
-  if (seq_one_byte) {
-    DisallowHeapAllocation no_gc;
-    Vector<const uint8_t> chars(seq_source_->GetChars() + beg_pos, length);
-    number = StringToDouble(chars,
-                            NO_FLAGS,  // Hex, octal or trailing junk.
-                            std::numeric_limits<double>::quiet_NaN());
-  } else {
-    Vector<uint8_t> buffer = Vector<uint8_t>::New(length);
-    String::WriteToFlat(*source_, buffer.start(), beg_pos, position_);
-    Vector<const uint8_t> result =
-        Vector<const uint8_t>(buffer.start(), length);
-    number = StringToDouble(result,
-                            NO_FLAGS,  // Hex, octal or trailing junk.
-                            0.0);
-    buffer.Dispose();
-  }
-  SkipWhitespace();
-  return factory()->NewNumber(number, pretenure_);
-}
-
-template <typename StringType>
-inline void SeqStringSet(Handle<StringType> seq_str, int i, uc32 c);
-
-template <>
-inline void SeqStringSet(Handle<SeqTwoByteString> seq_str, int i, uc32 c) {
-  seq_str->SeqTwoByteStringSet(i, c);
-}
-
-template <>
-inline void SeqStringSet(Handle<SeqOneByteString> seq_str, int i, uc32 c) {
-  seq_str->SeqOneByteStringSet(i, c);
-}
-
-template <typename StringType>
-inline Handle<StringType> NewRawString(Factory* factory, int length,
-                                       PretenureFlag pretenure);
-
-template <>
-inline Handle<SeqTwoByteString> NewRawString(Factory* factory, int length,
-                                             PretenureFlag pretenure) {
-  return factory->NewRawTwoByteString(length, pretenure).ToHandleChecked();
-}
-
-template <>
-inline Handle<SeqOneByteString> NewRawString(Factory* factory, int length,
-                                             PretenureFlag pretenure) {
-  return factory->NewRawOneByteString(length, pretenure).ToHandleChecked();
-}
-
-// Scans the rest of a JSON string starting from position_ and writes
-// prefix[start..end] along with the scanned characters into a
-// sequential string of type StringType.
-template <bool seq_one_byte>
-template <typename StringType, typename SinkChar>
-Handle<String> JsonParser<seq_one_byte>::SlowScanJsonString(
-    Handle<String> prefix, int start, int end) {
-  int count = end - start;
-  int max_length = count + source_length_ - position_;
-  int length = Min(max_length, Max(kInitialSpecialStringLength, 2 * count));
-  Handle<StringType> seq_string =
-      NewRawString<StringType>(factory(), length, pretenure_);
 
   {
     DisallowHeapAllocation no_gc;
-    // Copy prefix into seq_str.
-    SinkChar* dest = seq_string->GetChars();
-    String::WriteToFlat(*prefix, dest, start, end);
-  }
 
-  while (c0_ != '"') {
-    // Check for control character (0x00-0x1F) or unterminated string (<0).
-    if (c0_ < 0x20) return Handle<String>::null();
-    if (count >= length) {
-      // We need to create a longer sequential string for the result.
-      return SlowScanJsonString<StringType, SinkChar>(seq_string, 0, count);
-    }
-    if (c0_ != '\\') {
-      // If the sink can contain UC16 characters, or source_ contains only
-      // Latin1 characters, there's no need to test whether we can store the
-      // character. Otherwise check whether the UC16 source character can fit
-      // in the Latin1 sink.
-      if (sizeof(SinkChar) == kUC16Size || seq_one_byte ||
-          c0_ <= String::kMaxOneByteCharCode) {
-        SeqStringSet(seq_string, count++, c0_);
-        Advance();
-      } else {
-        // StringType is SeqOneByteString and we just read a non-Latin1 char.
-        return SlowScanJsonString<SeqTwoByteString, uc16>(seq_string, 0, count);
+    if (*cursor_ == '0') {
+      // Prefix zero is only allowed if it's the only digit before
+      // a decimal point or exponent.
+      Char c = NextCharacter();
+      if (c <= unibrow::Latin1::kMaxChar &&
+          IsNumberPart(character_scan_flags[c])) {
+        if (V8_UNLIKELY(IsDecimalDigit(c))) {
+          AllowHeapAllocation allow_before_exception;
+          ReportUnexpectedCharacter();
+          return handle(Smi::FromInt(0), isolate_);
+        }
+      } else if (sign > 0) {
+        return handle(Smi::FromInt(0), isolate_);
       }
     } else {
-      Advance();  // Advance past the \.
-      switch (c0_) {
-        case '"':
-        case '\\':
-        case '/':
-          SeqStringSet(seq_string, count++, c0_);
-          break;
-        case 'b':
-          SeqStringSet(seq_string, count++, '\x08');
-          break;
-        case 'f':
-          SeqStringSet(seq_string, count++, '\x0C');
-          break;
-        case 'n':
-          SeqStringSet(seq_string, count++, '\x0A');
-          break;
-        case 'r':
-          SeqStringSet(seq_string, count++, '\x0D');
-          break;
-        case 't':
-          SeqStringSet(seq_string, count++, '\x09');
-          break;
-        case 'u': {
-          uc32 value = 0;
-          for (int i = 0; i < 4; i++) {
-            Advance();
-            int digit = HexValue(c0_);
-            if (digit < 0) {
-              return Handle<String>::null();
-            }
-            value = value * 16 + digit;
-          }
-          if (sizeof(SinkChar) == kUC16Size ||
-              value <= String::kMaxOneByteCharCode) {
-            SeqStringSet(seq_string, count++, value);
-            break;
-          } else {
-            // StringType is SeqOneByteString and we just read a non-Latin1
-            // char.
-            position_ -= 6;  // Rewind position_ to \ in \uxxxx.
-            Advance();
-            return SlowScanJsonString<SeqTwoByteString, uc16>(seq_string, 0,
-                                                              count);
-          }
-        }
-        default:
-          return Handle<String>::null();
+      int32_t i = 0;
+      int digits = 0;
+      const Char* start = cursor_;
+      const int kMaxSmiLength = 9;
+      cursor_ = std::find_if(cursor_, Min(end_, cursor_ + kMaxSmiLength),
+                             [&i, &digits](Char c) {
+                               if (!IsDecimalDigit(c)) return true;
+                               i = i * 10 + (c - '0');
+                               digits++;
+                               return false;
+                             });
+      if (V8_UNLIKELY(cursor_ == start)) {
+        AllowHeapAllocation allow_before_exception;
+        ReportUnexpectedCharacter();
+        return handle(Smi::FromInt(0), isolate_);
       }
-      Advance();
+      if (is_at_end() || *cursor_ > unibrow::Latin1::kMaxChar ||
+          !IsNumberPart(character_scan_flags[*cursor_])) {
+        // Smi.
+        // TODO(verwaest): Cache?
+        return handle(Smi::FromInt(i * sign), isolate_);
+      }
+    }
+
+    cursor_ = std::find_if(cursor_, end_, [](Char c) {
+      return !(c <= unibrow::Latin1::kMaxChar &&
+               IsNumberPart(character_scan_flags[c])) ||
+             c == '.';
+    });
+
+    // If we found a period, ensure that it's followed by a decimal digit.
+    if (!is_at_end() && *cursor_ == '.') {
+      advance();
+      if (is_at_end()) {
+        AllowHeapAllocation allow_before_exception;
+        ReportUnexpectedCharacter(JsonToken::EOS);
+        return handle(Smi::FromInt(0), isolate_);
+      } else if (!IsDecimalDigit(*cursor_)) {
+        AllowHeapAllocation allow_before_exception;
+        ReportUnexpectedCharacter();
+        return handle(Smi::FromInt(0), isolate_);
+      } else {
+        cursor_ = std::find_if(cursor_, end_, [](Char c) {
+          return !(c <= unibrow::Latin1::kMaxChar &&
+                   IsNumberPart(character_scan_flags[c]));
+        });
+      }
+    }
+
+    Vector<const uint8_t> chars;
+    if (kIsOneByte) {
+      chars = Vector<const uint8_t>::cast(
+          Vector<const Char>(start, cursor_ - start));
+    } else {
+      literal_buffer_.Start();
+      while (start++ != cursor_) {
+        literal_buffer_.AddChar(*start++);
+      }
+      chars = literal_buffer_.one_byte_literal();
+    }
+
+    number = StringToDouble(chars,
+                            NO_FLAGS,  // Hex, octal or trailing junk.
+                            std::numeric_limits<double>::quiet_NaN());
+    if (V8_UNLIKELY(std::isnan(number))) {
+      if (!isolate_->has_pending_exception()) cursor_ = start;
+      AllowHeapAllocation allow_before_expection;
+      ReportUnexpectedCharacter();
     }
   }
 
-  DCHECK_EQ('"', c0_);
-  // Advance past the last '"'.
-  AdvanceSkipWhitespace();
-
-  // Shrink seq_string length to count and return.
-  return SeqString::Truncate(seq_string, count);
+  return factory()->NewNumber(number, allocation_);
 }
 
-template <bool seq_one_byte>
-Handle<String> JsonParser<seq_one_byte>::ScanJsonString() {
-  DCHECK_EQ('"', c0_);
-  Advance();
-  if (c0_ == '"') {
-    AdvanceSkipWhitespace();
-    return factory()->empty_string();
-  }
+namespace {
 
-  if (seq_one_byte) {
-    // Fast path for existing internalized strings.  If the the string being
-    // parsed is not a known internalized string, contains backslashes or
-    // unexpectedly reaches the end of string, return with an empty handle.
+template <typename Char>
+bool Matches(const Vector<const Char>& chars, Handle<String> string) {
+  if (string.is_null()) return false;
 
-    // We intentionally use local variables instead of fields, compute hash
-    // while we are iterating a string and manually inline StringTable lookup
-    // here.
+  // Only supports internalized strings in their canonical representation (one
+  // byte encoded as two-byte will return false here).
+  if ((sizeof(Char) == 1) != string->IsOneByteRepresentation()) return false;
+  if (chars.length() != string->length()) return false;
 
-    int position = position_;
-    uc32 c0 = c0_;
-    uint32_t running_hash =
-        static_cast<uint32_t>(isolate()->heap()->HashSeed());
-    uint32_t index = 0;
-    bool is_array_index = true;
+  DisallowHeapAllocation no_gc;
+  const Char* string_data = string->GetChars<Char>(no_gc);
+  return CompareChars(chars.begin(), string_data, chars.length()) == 0;
+}
 
-    do {
-      if (c0 == '\\') {
-        c0_ = c0;
-        int beg_pos = position_;
-        position_ = position;
-        return SlowScanJsonString<SeqOneByteString, uint8_t>(source_, beg_pos,
-                                                             position_);
-      }
-      if (c0 < 0x20) {
-        c0_ = c0;
-        position_ = position;
-        return Handle<String>::null();
-      }
-      if (is_array_index) {
-        // With leading zero, the string has to be "0" to be a valid index.
-        if (!IsDecimalDigit(c0) || (position > position_ && index == 0)) {
-          is_array_index = false;
-        } else {
-          int d = c0 - '0';
-          is_array_index = index <= 429496729U - ((d + 3) >> 3);
-          index = (index * 10) + d;
-        }
-      }
-      running_hash = StringHasher::AddCharacterCore(running_hash,
-                                                    static_cast<uint16_t>(c0));
-      position++;
-      if (position >= source_length_) {
-        c0_ = kEndOfString;
-        position_ = position;
-        return Handle<String>::null();
-      }
-      c0 = seq_source_->SeqOneByteStringGet(position);
-    } while (c0 != '"');
-    int length = position - position_;
-    uint32_t hash;
-    if (is_array_index) {
-      hash =
-          StringHasher::MakeArrayIndexHash(index, length) >> String::kHashShift;
-    } else if (length <= String::kMaxHashCalcLength) {
-      hash = StringHasher::GetHashCore(running_hash);
-    } else {
-      hash = static_cast<uint32_t>(length);
-    }
-    StringTable string_table = isolate()->heap()->string_table();
-    uint32_t capacity = string_table->Capacity();
-    uint32_t entry = StringTable::FirstProbe(hash, capacity);
-    uint32_t count = 1;
-    Handle<String> result;
-    while (true) {
-      Object* element = string_table->KeyAt(entry);
-      if (element->IsUndefined(isolate())) {
-        // Lookup failure.
-        result =
-            factory()->InternalizeOneByteString(seq_source_, position_, length);
-        break;
-      }
-      if (!element->IsTheHole(isolate())) {
-        DisallowHeapAllocation no_gc;
-        Vector<const uint8_t> string_vector(seq_source_->GetChars() + position_,
-                                            length);
-        if (String::cast(element)->IsOneByteEqualTo(string_vector)) {
-          result = Handle<String>(String::cast(element), isolate());
-          DCHECK_EQ(result->Hash(),
-                    (hash << String::kHashShift) >> String::kHashShift);
-          break;
-        }
-      }
-      entry = StringTable::NextProbe(entry, count++, capacity);
-    }
-    position_ = position;
-    // Advance past the last '"'.
-    AdvanceSkipWhitespace();
+}  // namespace
+
+template <typename Char>
+Handle<String> JsonParser<Char>::MakeString(bool requires_internalization,
+                                            int offset, int length) {
+  AllowHeapAllocation allow_gc;
+  DCHECK(chars_may_relocate_);
+  Handle<SeqOneByteString> source = Handle<SeqOneByteString>::cast(source_);
+
+  if (!requires_internalization && length > kMaxInternalizedStringValueLength) {
+    Handle<SeqOneByteString> result =
+        factory()->NewRawOneByteString(length).ToHandleChecked();
+    DisallowHeapAllocation no_gc;
+    uint8_t* d = result->GetChars(no_gc);
+    uint8_t* s = source->GetChars(no_gc) + offset;
+    MemCopy(d, s, length);
     return result;
   }
 
-  int beg_pos = position_;
-  // Fast case for Latin1 only without escape characters.
-  do {
-    // Check for control character (0x00-0x1F) or unterminated string (<0).
-    if (c0_ < 0x20) return Handle<String>::null();
-    if (c0_ != '\\') {
-      if (seq_one_byte || c0_ <= String::kMaxOneByteCharCode) {
-        Advance();
-      } else {
-        return SlowScanJsonString<SeqTwoByteString, uc16>(source_, beg_pos,
-                                                          position_);
-      }
-    } else {
-      return SlowScanJsonString<SeqOneByteString, uint8_t>(source_, beg_pos,
-                                                           position_);
-    }
-  } while (c0_ != '"');
-  int length = position_ - beg_pos;
-  Handle<String> result =
-      factory()->NewRawOneByteString(length, pretenure_).ToHandleChecked();
-  DisallowHeapAllocation no_gc;
-  uint8_t* dest = SeqOneByteString::cast(*result)->GetChars();
-  String::WriteToFlat(*source_, dest, beg_pos, position_);
+  return factory()->InternalizeOneByteString(source, offset, length);
+}
 
-  DCHECK_EQ('"', c0_);
-  // Advance past the last '"'.
-  AdvanceSkipWhitespace();
-  return result;
+template <typename Char>
+template <typename LiteralChar>
+Handle<String> JsonParser<Char>::MakeString(
+    bool requires_internalization, const Vector<const LiteralChar>& chars) {
+  AllowHeapAllocation allow_gc;
+  DCHECK_IMPLIES(
+      chars_may_relocate_,
+      chars.begin() == literal_buffer_.literal<LiteralChar>().begin());
+  if (!requires_internalization &&
+      chars.length() > kMaxInternalizedStringValueLength) {
+    if (sizeof(LiteralChar) == 1) {
+      return factory()
+          ->NewStringFromOneByte(Vector<const uint8_t>::cast(chars),
+                                 allocation_)
+          .ToHandleChecked();
+    }
+    return factory()
+        ->NewStringFromTwoByte(Vector<const uint16_t>::cast(chars), allocation_)
+        .ToHandleChecked();
+  }
+
+  SequentialStringKey<LiteralChar> key(chars, hash_seed_);
+  return StringTable::LookupKey(isolate_, &key);
+}
+
+template <typename Char>
+Handle<String> JsonParser<Char>::ParseJsonString(bool requires_internalization,
+                                                 Handle<String> hint) {
+  // First try to fast scan without buffering in case the string doesn't have
+  // escaped sequences. Always buffer two-byte input strings as the scanned
+  // substring can be one-byte.
+  if (kIsOneByte) {
+    DisallowHeapAllocation no_gc;
+    const Char* start = cursor_;
+
+    while (true) {
+      cursor_ = std::find_if(cursor_, end_, [](Char c) {
+        return MayTerminateString(character_scan_flags[c]);
+      });
+
+      if (V8_UNLIKELY(is_at_end())) break;
+
+      if (*cursor_ == '"') {
+        Handle<String> result;
+        Vector<const Char> chars(start, cursor_ - start);
+        if (Matches(chars, hint)) {
+          result = hint;
+        } else if (chars_may_relocate_) {
+          result = MakeString(requires_internalization,
+                              static_cast<int>(start - chars_),
+                              static_cast<int>(cursor_ - start));
+        } else {
+          result = MakeString(requires_internalization,
+                              Vector<const uint8_t>::cast(chars));
+        }
+        advance();
+        return result;
+      }
+
+      if (*cursor_ == '\\') break;
+
+      DCHECK_LT(*cursor_, 0x20);
+      AllowHeapAllocation allow_before_exception;
+      ReportUnexpectedCharacter();
+      return factory()->empty_string();
+    }
+
+    // We hit an escape sequence. Start buffering.
+    // TODO(verwaest): MemCopy.
+    literal_buffer_.Start();
+    while (start != cursor_) {
+      literal_buffer_.AddChar(*start++);
+    }
+  } else {
+    literal_buffer_.Start();
+  }
+
+  while (true) {
+    cursor_ = std::find_if(cursor_, end_, [this](Char c) {
+      if (V8_UNLIKELY(c > unibrow::Latin1::kMaxChar)) {
+        AddLiteralChar(c);
+        return false;
+      }
+      if (MayTerminateString(character_scan_flags[c])) {
+        return true;
+      }
+      AddLiteralChar(c);
+      return false;
+    });
+
+    if (V8_UNLIKELY(is_at_end())) break;
+
+    if (*cursor_ == '"') {
+      Handle<String> result;
+      if (literal_buffer_.is_one_byte()) {
+        Vector<const uint8_t> chars = literal_buffer_.one_byte_literal();
+        result = Matches(chars, hint)
+                     ? hint
+                     : MakeString(requires_internalization, chars);
+      } else {
+        Vector<const uint16_t> chars = literal_buffer_.two_byte_literal();
+        result = Matches(chars, hint)
+                     ? hint
+                     : MakeString(requires_internalization, chars);
+      }
+      advance();
+      return result;
+    }
+
+    if (*cursor_ == '\\') {
+      uc32 c = NextCharacter();
+      if (V8_UNLIKELY(c > unibrow::Latin1::kMaxChar)) {
+        ReportUnexpectedCharacter();
+        return factory()->empty_string();
+      }
+
+      uc32 value;
+
+      switch (GetEscapeKind(character_scan_flags[c])) {
+        case EscapeKind::kSelf:
+          value = c;
+          break;
+
+        case EscapeKind::kBackspace:
+          value = '\x08';
+          break;
+
+        case EscapeKind::kTab:
+          value = '\x09';
+          break;
+
+        case EscapeKind::kNewLine:
+          value = '\x0A';
+          break;
+
+        case EscapeKind::kFormFeed:
+          value = '\x0C';
+          break;
+
+        case EscapeKind::kCarriageReturn:
+          value = '\x0D';
+          break;
+
+        case EscapeKind::kUnicode: {
+          value = 0;
+          for (int i = 0; i < 4; i++) {
+            int digit = HexValue(NextCharacter());
+            if (V8_UNLIKELY(digit < 0)) {
+              ReportUnexpectedCharacter();
+              return factory()->empty_string();
+            }
+            value = value * 16 + digit;
+          }
+          break;
+        }
+
+        case EscapeKind::kIllegal:
+          ReportUnexpectedCharacter();
+          return factory()->empty_string();
+      }
+
+      AddLiteralChar(value);
+      advance();
+      continue;
+    }
+
+    DCHECK_LT(*cursor_, 0x20);
+    ReportUnexpectedCharacter();
+    return factory()->empty_string();
+  }
+
+  ReportUnexpectedCharacter(JsonToken::EOS);
+  return factory()->empty_string();
 }
 
 // Explicit instantiation.
-template class JsonParser<true>;
-template class JsonParser<false>;
+template class JsonParser<uint8_t>;
+template class JsonParser<uint16_t>;
 
 }  // namespace internal
 }  // namespace v8

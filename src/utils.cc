@@ -11,6 +11,7 @@
 #include "src/base/functional.h"
 #include "src/base/logging.h"
 #include "src/base/platform/platform.h"
+#include "src/memcopy.h"
 
 namespace v8 {
 namespace internal {
@@ -22,13 +23,15 @@ SimpleStringBuilder::SimpleStringBuilder(int size) {
 
 
 void SimpleStringBuilder::AddString(const char* s) {
-  AddSubstring(s, StrLength(s));
+  size_t len = strlen(s);
+  DCHECK_GE(kMaxInt, len);
+  AddSubstring(s, static_cast<int>(len));
 }
 
 
 void SimpleStringBuilder::AddSubstring(const char* s, int n) {
   DCHECK(!is_finalized() && position_ + n <= buffer_.length());
-  DCHECK(static_cast<size_t>(n) <= strlen(s));
+  DCHECK_LE(n, strlen(s));
   MemCopy(&buffer_[position_], s, n * kCharSize);
   position_ += n;
 }
@@ -70,10 +73,10 @@ char* SimpleStringBuilder::Finalize() {
   buffer_[position_] = '\0';
   // Make sure nobody managed to add a 0-character to the
   // buffer while building the string.
-  DCHECK(strlen(buffer_.start()) == static_cast<size_t>(position_));
+  DCHECK(strlen(buffer_.begin()) == static_cast<size_t>(position_));
   position_ = -1;
   DCHECK(is_finalized());
-  return buffer_.start();
+  return buffer_.begin();
 }
 
 std::ostream& operator<<(std::ostream& os, FeedbackSlot slot) {
@@ -136,12 +139,12 @@ int SNPrintF(Vector<char> str, const char* format, ...) {
 
 
 int VSNPrintF(Vector<char> str, const char* format, va_list args) {
-  return base::OS::VSNPrintF(str.start(), str.length(), format, args);
+  return base::OS::VSNPrintF(str.begin(), str.length(), format, args);
 }
 
 
 void StrNCpy(Vector<char> dest, const char* src, size_t n) {
-  base::OS::StrNCpy(dest.start(), dest.length(), src, n);
+  base::OS::StrNCpy(dest.begin(), dest.length(), src, n);
 }
 
 
@@ -153,7 +156,7 @@ void Flush(FILE* out) {
 char* ReadLine(const char* prompt) {
   char* result = nullptr;
   char line_buf[256];
-  int offset = 0;
+  size_t offset = 0;
   bool keep_going = true;
   fprintf(stdout, "%s", prompt);
   fflush(stdout);
@@ -165,7 +168,7 @@ char* ReadLine(const char* prompt) {
       }
       return nullptr;
     }
-    int len = StrLength(line_buf);
+    size_t len = strlen(line_buf);
     if (len > 1 &&
         line_buf[len - 2] == '\\' &&
         line_buf[len - 1] == '\n') {
@@ -184,7 +187,7 @@ char* ReadLine(const char* prompt) {
       result = NewArray<char>(len + 1);
     } else {
       // Allocate a new result with enough room for the new addition.
-      int new_len = offset + len + 1;
+      size_t new_len = offset + len + 1;
       char* new_result = NewArray<char>(new_len);
       // Copy the existing input into the new array and set the new
       // array as the result.
@@ -240,7 +243,7 @@ std::vector<char> ReadCharsFromFile(const char* filename, bool* exists,
 }
 
 std::string VectorToString(const std::vector<char>& chars) {
-  if (chars.size() == 0) {
+  if (chars.empty()) {
     return std::string();
   }
   return std::string(chars.begin(), chars.end());
@@ -333,71 +336,6 @@ void StringBuilder::AddFormattedList(const char* format, va_list list) {
   } else {
     position_ += n;
   }
-}
-
-#if V8_TARGET_ARCH_IA32
-static void MemMoveWrapper(void* dest, const void* src, size_t size) {
-  memmove(dest, src, size);
-}
-
-
-// Initialize to library version so we can call this at any time during startup.
-static MemMoveFunction memmove_function = &MemMoveWrapper;
-
-// Defined in codegen-ia32.cc.
-MemMoveFunction CreateMemMoveFunction();
-
-// Copy memory area to disjoint memory area.
-void MemMove(void* dest, const void* src, size_t size) {
-  if (size == 0) return;
-  // Note: here we rely on dependent reads being ordered. This is true
-  // on all architectures we currently support.
-  (*memmove_function)(dest, src, size);
-}
-
-#elif V8_OS_POSIX && V8_HOST_ARCH_ARM
-void MemCopyUint16Uint8Wrapper(uint16_t* dest, const uint8_t* src,
-                               size_t chars) {
-  uint16_t* limit = dest + chars;
-  while (dest < limit) {
-    *dest++ = static_cast<uint16_t>(*src++);
-  }
-}
-
-V8_EXPORT_PRIVATE MemCopyUint8Function memcopy_uint8_function =
-    &MemCopyUint8Wrapper;
-MemCopyUint16Uint8Function memcopy_uint16_uint8_function =
-    &MemCopyUint16Uint8Wrapper;
-// Defined in codegen-arm.cc.
-MemCopyUint8Function CreateMemCopyUint8Function(MemCopyUint8Function stub);
-MemCopyUint16Uint8Function CreateMemCopyUint16Uint8Function(
-    MemCopyUint16Uint8Function stub);
-
-#elif V8_OS_POSIX && V8_HOST_ARCH_MIPS
-V8_EXPORT_PRIVATE MemCopyUint8Function memcopy_uint8_function =
-    &MemCopyUint8Wrapper;
-// Defined in codegen-mips.cc.
-MemCopyUint8Function CreateMemCopyUint8Function(MemCopyUint8Function stub);
-#endif
-
-
-static bool g_memcopy_functions_initialized = false;
-
-void init_memcopy_functions() {
-  if (g_memcopy_functions_initialized) return;
-  g_memcopy_functions_initialized = true;
-#if V8_TARGET_ARCH_IA32
-  MemMoveFunction generated_memmove = CreateMemMoveFunction();
-  if (generated_memmove != nullptr) {
-    memmove_function = generated_memmove;
-  }
-#elif V8_OS_POSIX && V8_HOST_ARCH_ARM
-  memcopy_uint8_function = CreateMemCopyUint8Function(&MemCopyUint8Wrapper);
-  memcopy_uint16_uint8_function =
-      CreateMemCopyUint16Uint8Function(&MemCopyUint16Uint8Wrapper);
-#elif V8_OS_POSIX && V8_HOST_ARCH_MIPS
-  memcopy_uint8_function = CreateMemCopyUint8Function(&MemCopyUint8Wrapper);
-#endif
 }
 
 // Returns false iff d is NaN, +0, or -0.

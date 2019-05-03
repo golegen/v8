@@ -48,11 +48,13 @@ class JSSegmentIterator : public JSObject {
       Isolate* isolate, Handle<JSSegmentIterator> segment_iterator_holder,
       Handle<Object> from);
 
-  // ecma402 #sec-segment-iterator-prototype-position
-  static Handle<Object> Position(
+  // ecma402 #sec-segment-iterator-prototype-index
+  static Handle<Object> Index(
       Isolate* isolate, Handle<JSSegmentIterator> segment_iterator_holder);
 
   Handle<String> GranularityAsString() const;
+
+  DECL_BOOLEAN_ACCESSORS(is_break_type_set)
 
   // ecma402 #sec-segment-iterator-prototype-breakType
   Handle<Object> BreakType() const;
@@ -74,33 +76,24 @@ class JSSegmentIterator : public JSObject {
   inline JSSegmenter::Granularity granularity() const;
 
 // Bit positions in |flags|.
-#define FLAGS_BIT_FIELDS(V, _) \
-  V(GranularityBits, JSSegmenter::Granularity, 3, _)
+#define FLAGS_BIT_FIELDS(V, _)                       \
+  V(GranularityBits, JSSegmenter::Granularity, 2, _) \
+  V(BreakTypeSetBits, bool, 1, _)
   DEFINE_BIT_FIELDS(FLAGS_BIT_FIELDS)
 #undef FLAGS_BIT_FIELDS
 
   STATIC_ASSERT(JSSegmenter::Granularity::GRAPHEME <= GranularityBits::kMax);
   STATIC_ASSERT(JSSegmenter::Granularity::WORD <= GranularityBits::kMax);
   STATIC_ASSERT(JSSegmenter::Granularity::SENTENCE <= GranularityBits::kMax);
-  STATIC_ASSERT(JSSegmenter::Granularity::LINE <= GranularityBits::kMax);
 
   // [flags] Bit field containing various flags about the function.
   DECL_INT_ACCESSORS(flags)
 
 // Layout description.
-#define SEGMENTER_FIELDS(V)               \
-  /* Pointer fields. */                   \
-  V(kICUBreakIteratorOffset, kTaggedSize) \
-  V(kUnicodeStringOffset, kTaggedSize)    \
-  V(kFlagsOffset, kTaggedSize)            \
-  /* Total Size */                        \
-  V(kSize, 0)
+  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
+                                TORQUE_GENERATED_JSSEGMENT_ITERATOR_FIELDS)
 
-  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize, SEGMENTER_FIELDS)
-#undef SEGMENTER_FIELDS
-
- private:
-  DISALLOW_IMPLICIT_CONSTRUCTORS(JSSegmentIterator);
+  OBJECT_CONSTRUCTORS(JSSegmentIterator, JSObject);
 };
 
 }  // namespace internal
