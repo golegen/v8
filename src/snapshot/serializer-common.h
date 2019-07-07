@@ -5,14 +5,14 @@
 #ifndef V8_SNAPSHOT_SERIALIZER_COMMON_H_
 #define V8_SNAPSHOT_SERIALIZER_COMMON_H_
 
-#include "src/address-map.h"
 #include "src/base/bits.h"
-#include "src/external-reference-table.h"
-#include "src/globals.h"
-#include "src/msan.h"
+#include "src/base/memory.h"
+#include "src/codegen/external-reference-table.h"
+#include "src/common/globals.h"
+#include "src/objects/visitors.h"
+#include "src/sanitizer/msan.h"
 #include "src/snapshot/references.h"
-#include "src/v8memory.h"
-#include "src/visitors.h"
+#include "src/utils/address-map.h"
 
 namespace v8 {
 namespace internal {
@@ -344,12 +344,13 @@ class SerializedData {
 
  protected:
   void SetHeaderValue(uint32_t offset, uint32_t value) {
-    WriteLittleEndianValue(reinterpret_cast<Address>(data_) + offset, value);
+    base::WriteLittleEndianValue(reinterpret_cast<Address>(data_) + offset,
+                                 value);
   }
 
   uint32_t GetHeaderValue(uint32_t offset) const {
-    return ReadLittleEndianValue<uint32_t>(reinterpret_cast<Address>(data_) +
-                                           offset);
+    return base::ReadLittleEndianValue<uint32_t>(
+        reinterpret_cast<Address>(data_) + offset);
   }
 
   void AllocateData(uint32_t size);

@@ -297,15 +297,14 @@ void ProgramOptions::UpdateFromHeader(std::istream& stream) {
       oneshot_opt_ = ParseBoolean(line.c_str() + strlen(kOneshotOpt));
     } else if (line.compare(0, 17, "async iteration: ") == 0) {
       async_iteration_ = ParseBoolean(line.c_str() + 17);
-    } else if (line.compare(0, 16, "private methods: ") == 0) {
-      private_methods_ = ParseBoolean(line.c_str() + 16);
+    } else if (line.compare(0, 17, "private methods: ") == 0) {
+      private_methods_ = ParseBoolean(line.c_str() + 17);
     } else if (line == "---") {
       break;
     } else if (line.empty()) {
       continue;
     } else {
       UNREACHABLE();
-      return;
     }
   }
 }
@@ -465,7 +464,7 @@ bool WriteExpectationsFile(const std::vector<std::string>& snippet_list,
 
 void PrintMessage(v8::Local<v8::Message> message, v8::Local<v8::Value>) {
   std::cerr << "INFO: "
-            << *v8::String::Utf8Value(v8::Isolate::GetCurrent(), message->Get())
+            << *v8::String::Utf8Value(message->GetIsolate(), message->Get())
             << '\n';
 }
 

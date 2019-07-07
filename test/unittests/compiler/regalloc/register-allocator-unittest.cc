@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/assembler-inl.h"
+#include "src/codegen/assembler-inl.h"
 #include "src/compiler/pipeline.h"
 #include "test/unittests/compiler/backend/instruction-sequence-unittest.h"
 
@@ -771,7 +771,7 @@ class SlotConstraintTest : public RegisterAllocatorTest,
   int variant() const { return ::testing::get<1>(B::GetParam()); }
 
  private:
-  typedef ::testing::WithParamInterface<::testing::tuple<ParameterType, int>> B;
+  using B = ::testing::WithParamInterface<::testing::tuple<ParameterType, int>>;
 };
 
 }  // namespace
@@ -813,7 +813,6 @@ TEST_P(SlotConstraintTest, SlotConstraint) {
       break;
     default:
       UNREACHABLE();
-      break;
   }
   EndBlock(Last());
 

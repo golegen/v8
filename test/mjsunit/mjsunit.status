@@ -75,7 +75,7 @@
   'regress/regress-4595': [PASS, NO_VARIANTS, ['mode == debug', SKIP]],
 
   # Too slow in debug mode, due to large allocations.
-  'regress/regress-crbug-941743': [PASS, ['mode == debug', SKIP], ['(arch == arm or arch == arm64) and simulator_run == True', SKIP]],
+  'regress/regress-crbug-941743': [PASS, ['mode == debug', SKIP], ['(arch == arm or arch == arm64 or arch == mipsel or arch == mips64el) and simulator_run == True', SKIP]],
 
   ##############################################################################
   # Only RegExp stuff tested, no need for extensive optimizing compiler tests.
@@ -167,6 +167,7 @@
   'es6/typedarray-construct-offset-not-smi': [PASS, SLOW],
   'harmony/futex': [PASS, SLOW],
   'harmony/regexp-property-script-extensions': [PASS, SLOW],
+  'ignition/regress-672027': [PASS, SLOW],
   'md5': [PASS, SLOW],
   'numops-fuzz-part*': [PASS, ['mode == debug', SLOW]],
   'readonly': [PASS, SLOW],
@@ -237,6 +238,13 @@
 
   # Test is only enabled on ASAN. Takes too long on many other bots.
   'regress/regress-crbug-9161': [SKIP],
+
+  # BUG(v8:9260)
+  'tools/profviz': [SKIP],
+
+  # Test doesn't work on 32-bit architectures (it would require a
+  # regexp pattern with too many captures).
+  'regress/regress-976627': [FAIL, ['arch == x64 or arch == arm64 or arch == mips64el or arch == ppc64 or arch == s390x', PASS]],
 }],  # ALWAYS
 
 ['novfp3 == True', {
@@ -331,23 +339,6 @@
 ['lite_mode or variant == jitless', {
   # Skip tests not suitable for lite_mode.
 
-  # TODO(8596): We cache the templates in the feedback vector. In lite mode
-  # without feedback vectors we need to implement some other mechanism to cache
-  # them. Enable this test after fixing it.
-  'es6/templates': [SKIP],
-
-  # code coverage needs feedback vectors
-  'code-coverage-ad-hoc': [SKIP],
-  'code-coverage-class-fields': [SKIP],
-  'code-coverage-block-noopt': [SKIP],
-  'code-coverage-block': [SKIP],
-  'code-coverage-precise': [SKIP],
-
-  # Needs feedback vector - tests for allocation sites
-  'array-constructor-feedback': [SKIP],
-  'regress/regress-trap-allocation-memento': [SKIP],
-  'regress/regress-4121': [SKIP],
-
   # TODO(v8:7777): Re-enable once wasm is supported in jitless mode.
   'regress/regress-5888': [SKIP],
   'regress/regress-5911': [SKIP],
@@ -355,6 +346,7 @@
   'regress/regress-crbug-746835': [SKIP],
   'regress/regress-crbug-772056': [SKIP],
   'regress/regress-crbug-816961': [SKIP],
+  'regress/regress-crbug-969498': [SKIP],
   'regress/wasm/*': [SKIP],
   'regress/regress-8947': [SKIP],
   'regress/regress-9165': [SKIP],
@@ -377,6 +369,7 @@
   'regress/regress-6838-3': [SKIP],
   'regress/regress-9022': [SKIP],
   'regress/regress-crbug-934138': [SKIP],
+  'regress/regress-crbug-976934': [SKIP],
 
   # Timeouts in lite / jitless mode.
   'asm/embenchen/*': [SKIP],
@@ -393,14 +386,19 @@
 
   # These tests check that we can trace the compiler.
   'tools/compiler-trace-flags': [SKIP],
-  'tools/compiler-trace-flags-wasm': [SKIP]
+  'tools/compiler-trace-flags-wasm': [SKIP],
+
+  # Slow with pointer compression.
+  'regress/regress-crbug-319860': [PASS, ['pointer_compression', SLOW]],
 }],  # 'lite_mode or variant == jitless'
 
 ##############################################################################
-['lite_mode', {
-  # TODO(v8:8510): Tests that currently fail with lazy source positions.
-  'stack-traces-overflow': [SKIP],
-}], # lite_mode
+['is_full_debug', {
+  # Tests too slow in non-optimized debug mode.
+  'compiler/regress-9017': [SKIP],
+  'regress/regress-2790': [SKIP],
+  'regress/regress-740784': [SKIP],
+}],  # 'is_full_debug'
 
 ##############################################################################
 ['byteorder == big', {
@@ -478,6 +476,9 @@
 
   # BUG(v8:7247).
   'regress/regress-779407': [PASS, SLOW, NO_VARIANTS],
+
+  # BUG(v8:9256). Slow with pointer compression.
+  'regress/regress-708247': [PASS, ['pointer_compression', SLOW]],
 }],  # 'arch == arm64'
 
 ['arch == arm64 and mode == debug and simulator_run', {
@@ -566,7 +567,14 @@
   'es6/typedarray': [PASS, NO_VARIANTS],
   'regress/regress-752764': [PASS, SLOW, NO_VARIANTS],
 
+  # BUG(v8:9242). Uses a lot of memory.
+  'regress/regress-599414-array-concat-fast-path': [PASS, SLOW],
+
+  # BUG(v8:9026). Flaky timeouts.
+  'es6/classes': [SKIP],
+
   # Slow tests.
+  'compiler/regress-9017': [PASS, SLOW],
   'es6/block-conflicts-sloppy': [PASS, SLOW],
   'math-floor-part1': [PASS, SLOW],
   'regress/regress-500980': [PASS, SLOW],
@@ -774,6 +782,11 @@
   # Slow tests.
   'es6/typedarray-of': [PASS, SLOW],
   'regress/regress-crbug-854299': [PASS, SLOW],
+
+  # Runs flakily OOM because multiple isolates are involved which create many
+  # wasm memories each. Before running OOM on a wasm memory allocation we
+  # trigger a GC, but only in the isolate allocating the new memory.
+  'wasm/module-memory': [SKIP],
 }],  # 'isolates'
 
 ##############################################################################
@@ -817,6 +830,9 @@
   'code-coverage-ad-hoc': [SKIP],
   'code-coverage-precise': [SKIP],
 
+  # Flaky under GC stress (sometimes precludes the tested optimization)
+  'compiler/load-elimination-const-field': [SKIP],
+
   # Passes incompatible arguments.
   'd8/d8-arguments': [SKIP],
 
@@ -828,6 +844,7 @@
   # to GC.
   'compiler/native-context-specialization-hole-check': [SKIP],
   'regress/regress-trap-allocation-memento': [SKIP],
+  'regress/regress-v8-9267-*': [SKIP],
   'shared-function-tier-up-turbo': [SKIP],
 }],  # 'gc_fuzzer'
 
@@ -876,8 +893,11 @@
   'regress/regress-crbug-941743': [SKIP],
   'regress/regress-crbug-482998': [PASS, SLOW],
   'regress/regress-91008': [PASS, SLOW],
+  'regress/regress-779407': [PASS, SLOW],
+  'packed-elements': [PASS, SLOW],
   'harmony/regexp-property-lu-ui': [PASS, SLOW],
   'whitespaces': [PASS, SLOW],
+  'generated-transition-stub': [PASS, SLOW],
   'wasm/atomics-stress': [SKIP],
   'wasm/atomics64-stress': [SKIP],
 }],  # 'simulator_run and (arch in [ppc64, s390x])'
@@ -889,6 +909,12 @@
   'big-array-literal': [SKIP],
   'regress/regress-353551': [SKIP],
 }],  # 'arch == ppc64'
+
+##############################################################################
+['system == aix', {
+  # stack overflow
+  'regress/regress-crbug-178790': [PASS, ['mode == debug', SKIP]],
+}],  # 'system == aix'
 
 ##############################################################################
 ['arch == s390x', {
@@ -910,7 +936,8 @@
 
   # Too slow for TSAN in stress mode.
   # Goes OOM on ODROID devices: https://crbug.com/v8/9026
-  'es6/classes': [PASS, SLOW, ['tsan or (arch == arm and not simulator_run)', SKIP]],
+  # Too slow on PPC: https://crbug.com/v8/9246
+  'es6/classes': [PASS, SLOW, ['tsan or (arch == arm and not simulator_run) or arch in [ppc, ppc64]', SKIP]],
   'regress/regress-1122': [PASS, ['tsan', SKIP]],
 
   # Too slow with gc_stress on arm64.
@@ -919,6 +946,10 @@
   # Slow on arm64 simulator: https://crbug.com/v8/7783
   'string-replace-gc': [PASS, ['arch == arm64 and simulator_run', SKIP]],
 
+  # Too memory hungry.
+  'regress/regress-779407': [PASS, ['tsan', SKIP]],
+  'regress/regress-599414-array-concat-fast-path':  [PASS, ['tsan', SKIP]],
+
   # Too memory hungry on Odroid devices.
   'regress/regress-678917': [PASS, ['arch == arm and not simulator_run', SKIP]],
 }],  # variant == stress
@@ -926,6 +957,7 @@
 ##############################################################################
 ['variant == stress and (arch == arm or arch == arm64) and simulator_run', {
   # Slow tests: https://crbug.com/v8/7783
+  'es6/classes': [SKIP],
   'generated-transition-stub': [SKIP],
   'regress/regress-336820': [SKIP],
   'wasm/grow-memory': [SKIP],
@@ -1003,6 +1035,9 @@
   # Slow tests.
   'regress/regress-crbug-493779': [SKIP],
   'string-replace-gc': [SKIP],
+
+  # https://crbug.com/v8/9221
+  'wasm/grow-shared-memory': [SKIP],
 }],  # variant == slow_path
 
 ##############################################################################

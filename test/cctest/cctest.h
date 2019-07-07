@@ -33,13 +33,13 @@
 #include "include/libplatform/libplatform.h"
 #include "include/v8-platform.h"
 #include "src/base/enum-set.h"
+#include "src/codegen/register-configuration.h"
 #include "src/debug/debug-interface.h"
-#include "src/flags.h"
+#include "src/execution/isolate.h"
+#include "src/flags/flags.h"
 #include "src/heap/factory.h"
-#include "src/isolate.h"
-#include "src/objects.h"
-#include "src/register-configuration.h"
-#include "src/v8.h"
+#include "src/init/v8.h"
+#include "src/objects/objects.h"
 #include "src/zone/accounting-allocator.h"
 
 namespace v8 {
@@ -106,7 +106,7 @@ static constexpr const char* kExtensionName[kMaxExtensions] = {
 
 class CcTest {
  public:
-  typedef void (TestFunction)();
+  using TestFunction = void();
   CcTest(TestFunction* callback, const char* file, const char* name,
          bool enabled, bool initialize);
   ~CcTest() { i::DeleteArray(file_); }

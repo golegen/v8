@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "src/codegen/machine-type.h"
+#include "src/codegen/optimized-compilation-info.h"
 #include "src/compiler/backend/instruction-selector.h"
 #include "src/compiler/graph.h"
 #include "src/compiler/linkage.h"
@@ -13,11 +15,9 @@
 #include "src/compiler/pipeline.h"
 #include "src/compiler/raw-machine-assembler.h"
 #include "src/compiler/wasm-compiler.h"
-#include "src/machine-type.h"
-#include "src/objects-inl.h"
-#include "src/objects.h"
-#include "src/optimized-compilation-info.h"
-#include "src/simulator.h"
+#include "src/execution/simulator.h"
+#include "src/objects/objects-inl.h"
+#include "src/objects/objects.h"
 #include "src/wasm/wasm-engine.h"
 #include "src/wasm/wasm-features.h"
 #include "src/wasm/wasm-limits.h"
@@ -69,7 +69,7 @@ class InputProvider {
   int NextInt32(int limit) {
     if (current_ + sizeof(uint32_t) > end_) return 0;
     int result =
-        ReadLittleEndianValue<int>(reinterpret_cast<Address>(current_));
+        base::ReadLittleEndianValue<int>(reinterpret_cast<Address>(current_));
     current_ += sizeof(uint32_t);
     return result % limit;
   }

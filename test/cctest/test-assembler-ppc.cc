@@ -25,12 +25,12 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
-#include "src/disassembler.h"
+#include "src/codegen/ppc/assembler-ppc-inl.h"
+#include "src/diagnostics/disassembler.h"
+#include "src/execution/simulator.h"
 #include "src/heap/factory.h"
-#include "src/ppc/assembler-ppc-inl.h"
-#include "src/simulator.h"
 #include "test/cctest/cctest.h"
 #include "test/common/assembler-tester.h"
 
@@ -158,11 +158,11 @@ TEST(3) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct T {
     int i;
     char c;
     int16_t s;
-  } T;
+  };
   T t;
 
   Assembler assm(AssemblerOptions{});
@@ -233,7 +233,7 @@ TEST(4) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct T {
     double a;
     double b;
     double c;
@@ -247,7 +247,7 @@ TEST(4) {
     double n;
     float x;
     float y;
-  } T;
+  };
   T t;
 
   // Create a function that accepts &t, and loads, manipulates, and stores
@@ -623,7 +623,7 @@ TEST(8) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct D {
     double a;
     double b;
     double c;
@@ -632,10 +632,10 @@ TEST(8) {
     double f;
     double g;
     double h;
-  } D;
+  };
   D d;
 
-  typedef struct {
+  struct F {
     float a;
     float b;
     float c;
@@ -644,7 +644,7 @@ TEST(8) {
     float f;
     float g;
     float h;
-  } F;
+  };
   F f;
 
   // Create a function that uses vldm/vstm to move some double and
@@ -734,7 +734,7 @@ TEST(9) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct D {
     double a;
     double b;
     double c;
@@ -743,10 +743,10 @@ TEST(9) {
     double f;
     double g;
     double h;
-  } D;
+  };
   D d;
 
-  typedef struct {
+  struct F {
     float a;
     float b;
     float c;
@@ -755,7 +755,7 @@ TEST(9) {
     float f;
     float g;
     float h;
-  } F;
+  };
   F f;
 
   // Create a function that uses vldm/vstm to move some double and
@@ -849,7 +849,7 @@ TEST(10) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct D {
     double a;
     double b;
     double c;
@@ -858,10 +858,10 @@ TEST(10) {
     double f;
     double g;
     double h;
-  } D;
+  };
   D d;
 
-  typedef struct {
+  struct F {
     float a;
     float b;
     float c;
@@ -870,7 +870,7 @@ TEST(10) {
     float f;
     float g;
     float h;
-  } F;
+  };
   F f;
 
   // Create a function that uses vldm/vstm to move some double and
@@ -960,12 +960,12 @@ TEST(11) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct I {
     int32_t a;
     int32_t b;
     int32_t c;
     int32_t d;
-  } I;
+  };
   I i;
 
   i.a = 0xABCD0001;

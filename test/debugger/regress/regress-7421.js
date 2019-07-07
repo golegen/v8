@@ -20,9 +20,11 @@ function wrapper1() {
     // Get this function optimized before calling to increment.
     // Check that that call performs the necessary side-effect checks.
     %OptimizeOsr();
+    %PrepareFunctionForOptimization(wrapper1);
   }
   f1();
 }
+%PrepareFunctionForOptimization(wrapper1);
 
 function f2() {
   counter++;

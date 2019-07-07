@@ -5,8 +5,8 @@
 #include "src/regexp/regexp-macro-assembler-irregexp.h"
 
 #include "src/ast/ast.h"
-#include "src/objects-inl.h"
-#include "src/regexp/bytecodes-irregexp.h"
+#include "src/objects/objects-inl.h"
+#include "src/regexp/regexp-bytecodes.h"
 #include "src/regexp/regexp-macro-assembler-irregexp-inl.h"
 #include "src/regexp/regexp-macro-assembler.h"
 

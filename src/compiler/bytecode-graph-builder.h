@@ -7,8 +7,8 @@
 
 #include "src/compiler/js-operator.h"
 #include "src/compiler/js-type-hint-lowering.h"
-#include "src/handles.h"
-#include "src/utils.h"
+#include "src/utils/utils.h"
+#include "src/handles/handles.h"
 
 namespace v8 {
 namespace internal {
@@ -30,12 +30,17 @@ enum class BytecodeGraphBuilderFlag : uint8_t {
 };
 using BytecodeGraphBuilderFlags = base::Flags<BytecodeGraphBuilderFlag>;
 
-void BuildGraphFromBytecode(
-    Zone* local_zone, Handle<BytecodeArray> bytecode_array,
-    Handle<SharedFunctionInfo> shared, Handle<FeedbackVector> feedback_vector,
-    BailoutId osr_offset, JSGraph* jsgraph, CallFrequency invocation_frequency,
-    SourcePositionTable* source_positions, Handle<Context> native_context,
-    int inlining_id, BytecodeGraphBuilderFlags flags);
+// Note: {invocation_frequency} is taken by reference to work around a GCC bug
+// on AIX (v8:8193).
+void BuildGraphFromBytecode(JSHeapBroker* broker, Zone* local_zone,
+                            Handle<BytecodeArray> bytecode_array,
+                            Handle<SharedFunctionInfo> shared,
+                            Handle<FeedbackVector> feedback_vector,
+                            BailoutId osr_offset, JSGraph* jsgraph,
+                            CallFrequency const& invocation_frequency,
+                            SourcePositionTable* source_positions,
+                            Handle<Context> native_context, int inlining_id,
+                            BytecodeGraphBuilderFlags flags);
 
 }  // namespace compiler
 }  // namespace internal

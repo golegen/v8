@@ -4,23 +4,23 @@
 
 #if V8_TARGET_ARCH_ARM
 
-#include "src/api-arguments.h"
-#include "src/code-factory.h"
-#include "src/counters.h"
+#include "src/api/api-arguments.h"
+#include "src/codegen/code-factory.h"
 #include "src/debug/debug.h"
-#include "src/deoptimizer.h"
-#include "src/frame-constants.h"
-#include "src/frames.h"
+#include "src/deoptimizer/deoptimizer.h"
+#include "src/execution/frame-constants.h"
+#include "src/execution/frames.h"
+#include "src/logging/counters.h"
 // For interpreter_entry_return_pc_offset. TODO(jkummerow): Drop.
+#include "src/codegen/macro-assembler-inl.h"
+#include "src/codegen/register-configuration.h"
 #include "src/heap/heap-inl.h"
-#include "src/macro-assembler-inl.h"
-#include "src/objects-inl.h"
 #include "src/objects/cell.h"
 #include "src/objects/foreign.h"
 #include "src/objects/heap-number.h"
 #include "src/objects/js-generator.h"
+#include "src/objects/objects-inl.h"
 #include "src/objects/smi.h"
-#include "src/register-configuration.h"
 #include "src/runtime/runtime.h"
 #include "src/wasm/wasm-objects.h"
 
@@ -29,8 +29,7 @@ namespace internal {
 
 #define __ ACCESS_MASM(masm)
 
-void Builtins::Generate_Adaptor(MacroAssembler* masm, Address address,
-                                ExitFrameType exit_frame_type) {
+void Builtins::Generate_Adaptor(MacroAssembler* masm, Address address) {
 #if defined(__thumb__)
   // Thumb mode builtin.
   DCHECK_EQ(1, reinterpret_cast<uintptr_t>(
@@ -38,14 +37,8 @@ void Builtins::Generate_Adaptor(MacroAssembler* masm, Address address,
                    1);
 #endif
   __ Move(kJavaScriptCallExtraArg1Register, ExternalReference::Create(address));
-  if (exit_frame_type == BUILTIN_EXIT) {
-    __ Jump(BUILTIN_CODE(masm->isolate(), AdaptorWithBuiltinExitFrame),
-            RelocInfo::CODE_TARGET);
-  } else {
-    DCHECK(exit_frame_type == EXIT);
-    __ Jump(BUILTIN_CODE(masm->isolate(), AdaptorWithExitFrame),
-            RelocInfo::CODE_TARGET);
-  }
+  __ Jump(BUILTIN_CODE(masm->isolate(), AdaptorWithBuiltinExitFrame),
+          RelocInfo::CODE_TARGET);
 }
 
 void Builtins::Generate_InternalArrayConstructor(MacroAssembler* masm) {
@@ -1100,11 +1093,11 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
   // 8-bit fields next to each other, so we could just optimize by writing a
   // 16-bit. These static asserts guard our assumption is valid.
   STATIC_ASSERT(BytecodeArray::kBytecodeAgeOffset ==
-                BytecodeArray::kOSRNestingLevelOffset + kCharSize);
+                BytecodeArray::kOsrNestingLevelOffset + kCharSize);
   STATIC_ASSERT(BytecodeArray::kNoAgeBytecodeAge == 0);
   __ mov(r9, Operand(0));
   __ strh(r9, FieldMemOperand(kInterpreterBytecodeArrayRegister,
-                              BytecodeArray::kOSRNestingLevelOffset));
+                              BytecodeArray::kOsrNestingLevelOffset));
 
   // Load the initial bytecode offset.
   __ mov(kInterpreterBytecodeOffsetRegister,
@@ -1350,7 +1343,7 @@ static void Generate_InterpreterEnterBytecode(MacroAssembler* masm) {
   __ ldr(r2, MemOperand(r2));
 
   __ bind(&trampoline_loaded);
-  __ add(lr, r2, Operand(interpreter_entry_return_pc_offset->value()));
+  __ add(lr, r2, Operand(interpreter_entry_return_pc_offset.value()));
 
   // Initialize the dispatch table register.
   __ Move(
@@ -1516,13 +1509,16 @@ void Generate_ContinueToBuiltinHelper(MacroAssembler* masm,
   __ ldr(fp, MemOperand(
                  sp, BuiltinContinuationFrameConstants::kFixedFrameSizeFromFp));
 
+  // Load builtin index (stored as a Smi) and use it to get the builtin start
+  // address from the builtins table.
   UseScratchRegisterScope temps(masm);
-  Register scratch = temps.Acquire();
-  __ Pop(scratch);
+  Register builtin = temps.Acquire();
+  __ Pop(builtin);
   __ add(sp, sp,
          Operand(BuiltinContinuationFrameConstants::kFixedFrameSizeFromFp));
   __ Pop(lr);
-  __ add(pc, scratch, Operand(Code::kHeaderSize - kHeapObjectTag));
+  __ LoadEntryFromBuiltinIndex(builtin);
+  __ bx(builtin);
 }
 }  // namespace
 
@@ -2842,19 +2838,25 @@ void CallApiFunctionAndReturn(MacroAssembler* masm, Register function_address,
 
   DCHECK(function_address == r1 || function_address == r2);
 
-  Label profiler_disabled;
-  Label end_profiler_check;
+  Label profiler_enabled, end_profiler_check;
   __ Move(r9, ExternalReference::is_profiling_address(isolate));
   __ ldrb(r9, MemOperand(r9, 0));
   __ cmp(r9, Operand(0));
-  __ b(eq, &profiler_disabled);
-
-  // Additional parameter is the address of the actual callback.
-  __ Move(r3, thunk_ref);
-  __ jmp(&end_profiler_check);
-
-  __ bind(&profiler_disabled);
-  __ Move(r3, function_address);
+  __ b(ne, &profiler_enabled);
+  __ Move(r9, ExternalReference::address_of_runtime_stats_flag());
+  __ ldr(r9, MemOperand(r9, 0));
+  __ cmp(r9, Operand(0));
+  __ b(ne, &profiler_enabled);
+  {
+    // Call the api function directly.
+    __ Move(r3, function_address);
+    __ b(&end_profiler_check);
+  }
+  __ bind(&profiler_enabled);
+  {
+    // Additional parameter is the address of the actual callback.
+    __ Move(r3, thunk_ref);
+  }
   __ bind(&end_profiler_check);
 
   // Allocate HandleScope in callee-save registers.
@@ -2865,25 +2867,7 @@ void CallApiFunctionAndReturn(MacroAssembler* masm, Register function_address,
   __ add(r6, r6, Operand(1));
   __ str(r6, MemOperand(r9, kLevelOffset));
 
-  if (FLAG_log_timer_events) {
-    FrameScope frame(masm, StackFrame::MANUAL);
-    __ PushSafepointRegisters();
-    __ PrepareCallCFunction(1);
-    __ Move(r0, ExternalReference::isolate_address(isolate));
-    __ CallCFunction(ExternalReference::log_enter_external_function(), 1);
-    __ PopSafepointRegisters();
-  }
-
   __ StoreReturnAddressAndCall(r3);
-
-  if (FLAG_log_timer_events) {
-    FrameScope frame(masm, StackFrame::MANUAL);
-    __ PushSafepointRegisters();
-    __ PrepareCallCFunction(1);
-    __ Move(r0, ExternalReference::isolate_address(isolate));
-    __ CallCFunction(ExternalReference::log_leave_external_function(), 1);
-    __ PopSafepointRegisters();
-  }
 
   Label promote_scheduled_exception;
   Label delete_allocated_handles;
@@ -2966,7 +2950,7 @@ void Builtins::Generate_CallApiCallback(MacroAssembler* masm) {
 
   DCHECK(!AreAliased(api_function_address, argc, call_data, holder, scratch));
 
-  typedef FunctionCallbackArguments FCA;
+  using FCA = FunctionCallbackArguments;
 
   STATIC_ASSERT(FCA::kArgsLength == 6);
   STATIC_ASSERT(FCA::kNewTargetIndex == 5);

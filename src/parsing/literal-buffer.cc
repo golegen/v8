@@ -4,18 +4,18 @@
 
 #include "src/parsing/literal-buffer.h"
 
+#include "src/execution/isolate.h"
 #include "src/heap/factory.h"
-#include "src/isolate.h"
-#include "src/memcopy.h"
+#include "src/utils/memcopy.h"
 
 namespace v8 {
 namespace internal {
 
 Handle<String> LiteralBuffer::Internalize(Isolate* isolate) const {
   if (is_one_byte()) {
-    return isolate->factory()->InternalizeOneByteString(one_byte_literal());
+    return isolate->factory()->InternalizeString(one_byte_literal());
   }
-  return isolate->factory()->InternalizeTwoByteString(two_byte_literal());
+  return isolate->factory()->InternalizeString(two_byte_literal());
 }
 
 int LiteralBuffer::NewCapacity(int min_capacity) {

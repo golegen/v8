@@ -5,8 +5,8 @@
 #include "test/cctest/cctest.h"
 
 #include "include/v8.h"
-#include "src/api.h"
-#include "src/objects-inl.h"
+#include "src/api/api.h"
+#include "src/objects/objects-inl.h"
 
 namespace i = v8::internal;
 

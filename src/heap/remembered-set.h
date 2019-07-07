@@ -5,11 +5,11 @@
 #ifndef V8_HEAP_REMEMBERED_SET_H_
 #define V8_HEAP_REMEMBERED_SET_H_
 
+#include "src/base/memory.h"
+#include "src/codegen/reloc-info.h"
 #include "src/heap/heap.h"
 #include "src/heap/slot-set.h"
 #include "src/heap/spaces.h"
-#include "src/reloc-info.h"
-#include "src/v8memory.h"
 
 namespace v8 {
 namespace internal {
@@ -309,7 +309,7 @@ class UpdateTypedSlotHelper {
     SlotCallbackResult result = callback(FullMaybeObjectSlot(&code));
     DCHECK(!HasWeakHeapObjectTag(code));
     if (code != old_code) {
-      Memory<Address>(entry_address) = code->entry();
+      base::Memory<Address>(entry_address) = code.entry();
     }
     return result;
   }
@@ -325,8 +325,7 @@ class UpdateTypedSlotHelper {
     SlotCallbackResult result = callback(FullMaybeObjectSlot(&new_target));
     DCHECK(!HasWeakHeapObjectTag(new_target));
     if (new_target != old_target) {
-      rinfo->set_target_address(
-          Code::cast(new_target)->raw_instruction_start());
+      rinfo->set_target_address(Code::cast(new_target).raw_instruction_start());
     }
     return result;
   }

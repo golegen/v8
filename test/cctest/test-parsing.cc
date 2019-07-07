@@ -31,18 +31,18 @@
 
 #include <memory>
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
-#include "src/api-inl.h"
+#include "src/api/api-inl.h"
 #include "src/ast/ast-value-factory.h"
 #include "src/ast/ast.h"
 #include "src/base/enum-set.h"
-#include "src/compiler.h"
-#include "src/execution.h"
-#include "src/flags.h"
-#include "src/isolate.h"
-#include "src/objects-inl.h"
-#include "src/objects.h"
+#include "src/codegen/compiler.h"
+#include "src/execution/execution.h"
+#include "src/execution/isolate.h"
+#include "src/flags/flags.h"
+#include "src/objects/objects-inl.h"
+#include "src/objects/objects.h"
 #include "src/parsing/parse-info.h"
 #include "src/parsing/parser.h"
 #include "src/parsing/parsing.h"
@@ -3222,7 +3222,7 @@ TEST(SerializationOfMaybeAssignmentFlag) {
   i::DeclarationScope* script_scope =
       new (&zone) i::DeclarationScope(&zone, &avf);
   i::Scope* s = i::Scope::DeserializeScopeChain(
-      isolate, &zone, context->scope_info(), script_scope, &avf,
+      isolate, &zone, context.scope_info(), script_scope, &avf,
       i::Scope::DeserializationMode::kIncludingVariables);
   CHECK(s != script_scope);
   CHECK_NOT_NULL(name);
@@ -3271,7 +3271,7 @@ TEST(IfArgumentsArrayAccessedThenParametersMaybeAssigned) {
   i::DeclarationScope* script_scope =
       new (&zone) i::DeclarationScope(&zone, &avf);
   i::Scope* s = i::Scope::DeserializeScopeChain(
-      isolate, &zone, context->scope_info(), script_scope, &avf,
+      isolate, &zone, context.scope_info(), script_scope, &avf,
       i::Scope::DeserializationMode::kIncludingVariables);
   CHECK(s != script_scope);
 
@@ -4185,7 +4185,7 @@ i::Scope* DeserializeFunctionScope(i::Isolate* isolate, i::Zone* zone,
   i::DeclarationScope* script_scope =
       new (zone) i::DeclarationScope(zone, &avf);
   i::Scope* s = i::Scope::DeserializeScopeChain(
-      isolate, zone, f->context()->scope_info(), script_scope, &avf,
+      isolate, zone, f->context().scope_info(), script_scope, &avf,
       i::Scope::DeserializationMode::kIncludingVariables);
   return s;
 }
@@ -4701,10 +4701,10 @@ TEST(ImportExpressionSuccess) {
   // context.
   // For example, a top level "import(" is parsed as an
   // import declaration. The parser parses the import token correctly
-  // and then shows an "Unexpected token (" error message. The
+  // and then shows an "Unexpected token '('" error message. The
   // preparser does not understand the import keyword (this test is
   // run without kAllowHarmonyDynamicImport flag), so this results in
-  // an "Unexpected token import" error.
+  // an "Unexpected token 'import'" error.
   RunParserSyncTest(context_data, data, kError);
   RunModuleParserSyncTest(context_data, data, kError, nullptr, 0, nullptr, 0,
                           nullptr, 0, true, true);
@@ -4772,7 +4772,7 @@ TEST(ImportExpressionErrors) {
     // as an import declaration. The parser parses the import token
     // correctly and then shows an "Unexpected end of input" error
     // message because of the '{'. The preparser shows an "Unexpected
-    // token {" because it's not a valid token in a CallExpression.
+    // token '{'" because it's not a valid token in a CallExpression.
     RunModuleParserSyncTest(context_data, data, kError, nullptr, 0, flags,
                             arraysize(flags), nullptr, 0, true, true);
   }
@@ -7424,7 +7424,7 @@ TEST(EnumReserved) {
   RunModuleParserSyncTest(context_data, kErrorSources, kError);
 }
 
-static void CheckEntry(const i::ModuleDescriptor::Entry* entry,
+static void CheckEntry(const i::SourceTextModuleDescriptor::Entry* entry,
                        const char* export_name, const char* local_name,
                        const char* import_name, int module_request) {
   CHECK_NOT_NULL(entry);
@@ -7487,7 +7487,7 @@ TEST(ModuleParsingInternals) {
   CHECK(outer_scope->is_script_scope());
   CHECK_NULL(outer_scope->outer_scope());
   CHECK(module_scope->is_module_scope());
-  const i::ModuleDescriptor::Entry* entry;
+  const i::SourceTextModuleDescriptor::Entry* entry;
   i::Declaration::List* declarations = module_scope->declarations();
   CHECK_EQ(13, declarations->LengthForTest());
 
@@ -7572,7 +7572,7 @@ TEST(ModuleParsingInternals) {
   CHECK(declarations->AtForTest(12)->var()->location() ==
         i::VariableLocation::MODULE);
 
-  i::ModuleDescriptor* descriptor = module_scope->module();
+  i::SourceTextModuleDescriptor* descriptor = module_scope->module();
   CHECK_NOT_NULL(descriptor);
 
   CHECK_EQ(5u, descriptor->module_requests().size());
@@ -11052,8 +11052,8 @@ TEST(LexicalLoopVariable) {
   i::Isolate* isolate = CcTest::i_isolate();
   i::HandleScope scope(isolate);
   LocalContext env;
-  typedef std::function<void(const i::ParseInfo& info, i::DeclarationScope*)>
-      TestCB;
+  using TestCB =
+      std::function<void(const i::ParseInfo& info, i::DeclarationScope*)>;
   auto TestProgram = [isolate](const char* program, TestCB test) {
     i::Factory* const factory = isolate->factory();
     i::Handle<i::String> source =
@@ -11319,15 +11319,9 @@ TEST(HashbangSyntax) {
 
   const char* data[] = {"function\nFN\n(\n)\n {\n}\nFN();", nullptr};
 
-  i::FLAG_harmony_hashbang = true;
   RunParserSyncTest(context_data, data, kSuccess);
   RunParserSyncTest(context_data, data, kSuccess, nullptr, 0, nullptr, 0,
                     nullptr, 0, true);
-
-  i::FLAG_harmony_hashbang = false;
-  RunParserSyncTest(context_data, data, kError);
-  RunParserSyncTest(context_data, data, kError, nullptr, 0, nullptr, 0, nullptr,
-                    0, true);
 }
 
 TEST(HashbangSyntaxErrors) {
@@ -11370,12 +11364,6 @@ TEST(HashbangSyntaxErrors) {
   const char* hashbang_data[] = {"#!\n", "#!---IGNORED---\n", nullptr};
 
   auto SyntaxErrorTest = [](const char* context_data[][2], const char* data[]) {
-    i::FLAG_harmony_hashbang = true;
-    RunParserSyncTest(context_data, data, kError);
-    RunParserSyncTest(context_data, data, kError, nullptr, 0, nullptr, 0,
-                      nullptr, 0, true);
-
-    i::FLAG_harmony_hashbang = false;
     RunParserSyncTest(context_data, data, kError);
     RunParserSyncTest(context_data, data, kError, nullptr, 0, nullptr, 0,
                       nullptr, 0, true);

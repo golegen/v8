@@ -4,17 +4,17 @@
 
 #include "src/interpreter/interpreter-intrinsics-generator.h"
 
-#include "src/allocation.h"
 #include "src/builtins/builtins.h"
-#include "src/code-factory.h"
-#include "src/frames.h"
+#include "src/codegen/code-factory.h"
+#include "src/execution/frames.h"
 #include "src/heap/factory-inl.h"
 #include "src/interpreter/bytecodes.h"
 #include "src/interpreter/interpreter-assembler.h"
 #include "src/interpreter/interpreter-intrinsics.h"
-#include "src/objects-inl.h"
 #include "src/objects/js-generator.h"
-#include "src/objects/module.h"
+#include "src/objects/objects-inl.h"
+#include "src/objects/source-text-module.h"
+#include "src/utils/allocation.h"
 
 namespace v8 {
 namespace internal {
@@ -157,12 +157,6 @@ Node* IntrinsicsGenerator::IsArray(
     const InterpreterAssembler::RegListNodePair& args, Node* context) {
   Node* input = __ LoadRegisterFromRegisterList(args, 0);
   return IsInstanceType(input, JS_ARRAY_TYPE);
-}
-
-Node* IntrinsicsGenerator::IsTypedArray(
-    const InterpreterAssembler::RegListNodePair& args, Node* context) {
-  Node* input = __ LoadRegisterFromRegisterList(args, 0);
-  return IsInstanceType(input, JS_TYPED_ARRAY_TYPE);
 }
 
 Node* IntrinsicsGenerator::IsSmi(
@@ -330,7 +324,7 @@ Node* IntrinsicsGenerator::GetImportMetaObject(
   Node* const module =
       __ LoadContextElement(module_context, Context::EXTENSION_INDEX);
   Node* const import_meta =
-      __ LoadObjectField(module, Module::kImportMetaOffset);
+      __ LoadObjectField(module, SourceTextModule::kImportMetaOffset);
 
   InterpreterAssembler::Variable return_value(assembler_,
                                               MachineRepresentation::kTagged);

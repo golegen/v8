@@ -7,9 +7,9 @@
 
 #include <memory>
 
-#include "src/globals.h"
-#include "src/handles.h"
-#include "src/vector.h"
+#include "src/common/globals.h"
+#include "src/handles/handles.h"
+#include "src/utils/vector.h"
 #include "src/wasm/signature-map.h"
 #include "src/wasm/wasm-constants.h"
 #include "src/wasm/wasm-opcodes.h"
@@ -222,6 +222,14 @@ struct V8_EXPORT_PRIVATE WasmModule {
 };
 
 size_t EstimateStoredSize(const WasmModule* module);
+
+// Returns the number of possible export wrappers for a given module.
+V8_EXPORT_PRIVATE int MaxNumExportWrappers(const WasmModule* module);
+
+// Returns the wrapper index for a function in {module} with signature {sig}
+// and origin defined by {is_import}.
+int GetExportWrapperIndex(const WasmModule* module, const FunctionSig* sig,
+                          bool is_import);
 
 // Interface to the storage (wire bytes) of a wasm module.
 // It is illegal for anyone receiving a ModuleWireBytes to store pointers based

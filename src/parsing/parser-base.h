@@ -11,20 +11,20 @@
 #include "src/ast/ast-source-ranges.h"
 #include "src/ast/ast.h"
 #include "src/ast/scopes.h"
-#include "src/bailout-reason.h"
 #include "src/base/flags.h"
 #include "src/base/hashmap.h"
 #include "src/base/v8-fallthrough.h"
-#include "src/counters.h"
-#include "src/function-kind.h"
-#include "src/globals.h"
-#include "src/log.h"
-#include "src/message-template.h"
+#include "src/codegen/bailout-reason.h"
+#include "src/common/globals.h"
+#include "src/common/message-template.h"
+#include "src/logging/counters.h"
+#include "src/logging/log.h"
+#include "src/objects/function-kind.h"
 #include "src/parsing/expression-scope.h"
 #include "src/parsing/func-name-inferrer.h"
 #include "src/parsing/scanner.h"
 #include "src/parsing/token.h"
-#include "src/pointer-with-payload.h"
+#include "src/utils/pointer-with-payload.h"
 #include "src/zone/zone-chunk-list.h"
 
 namespace v8 {
@@ -527,6 +527,7 @@ class ParserBase {
           has_static_computed_names(false),
           has_static_class_fields(false),
           has_instance_members(false),
+          requires_brand(false),
           is_anonymous(false),
           static_fields_scope(nullptr),
           instance_members_scope(nullptr),
@@ -543,6 +544,7 @@ class ParserBase {
     bool has_static_computed_names;
     bool has_static_class_fields;
     bool has_instance_members;
+    bool requires_brand;
     bool is_anonymous;
     DeclarationScope* static_fields_scope;
     DeclarationScope* instance_members_scope;
@@ -620,6 +622,11 @@ class ParserBase {
         // Only returns for deterministic kinds
         UNREACHABLE();
     }
+  }
+
+  RequiresBrandCheckFlag RequiresBrandCheck(ClassLiteralProperty::Kind kind) {
+    return kind == ClassLiteralProperty::Kind::FIELD ? kNoBrandCheck
+                                                     : kRequiresBrandCheck;
   }
 
   const AstRawString* ClassFieldVariableName(AstValueFactory* ast_value_factory,
@@ -1303,7 +1310,7 @@ class ParserBase {
     return factory()->NewReturnStatement(expr, pos, end_pos);
   }
 
-  ModuleDescriptor* module() const {
+  SourceTextModuleDescriptor* module() const {
     return scope()->AsModuleScope()->module();
   }
   Scope* scope() const { return scope_; }
@@ -1559,16 +1566,16 @@ ParserBase<Impl>::ParsePropertyOrPrivatePropertyName() {
     //
     // Here, we check if this is a new private name reference in a top
     // level function and throw an error if so.
-    //
-    // Bug(v8:7468): This hack will go away once we refactor private
-    // name resolution to happen independently from scope resolution.
     ClassScope* class_scope = scope()->GetClassScope();
+    // Parse the identifier so that we can display it in the error message
+    name = impl()->GetIdentifier();
     if (class_scope == nullptr) {
-      ReportMessage(MessageTemplate::kInvalidPrivateFieldResolution);
+      impl()->ReportMessageAt(Scanner::Location(pos, pos + 1),
+                              MessageTemplate::kInvalidPrivateFieldResolution,
+                              impl()->GetRawNameFromIdentifier(name),
+                              kSyntaxError);
       return impl()->FailureExpression();
     }
-
-    name = impl()->GetIdentifier();
     key = impl()->ExpressionFromPrivateName(class_scope, name, pos);
   } else {
     ReportUnexpectedToken(next);
@@ -1588,15 +1595,14 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParseRegExpLiteral() {
   }
 
   IdentifierT js_pattern = impl()->GetNextSymbol();
-  Maybe<RegExp::Flags> flags = scanner()->ScanRegExpFlags();
+  Maybe<int> flags = scanner()->ScanRegExpFlags();
   if (flags.IsNothing()) {
     Next();
     ReportMessage(MessageTemplate::kMalformedRegExpFlags);
     return impl()->FailureExpression();
   }
-  int js_flags = flags.FromJust();
   Next();
-  return factory()->NewRegExpLiteral(js_pattern, js_flags, pos);
+  return factory()->NewRegExpLiteral(js_pattern, flags.FromJust(), pos);
 }
 
 template <typename Impl>
@@ -2754,7 +2760,8 @@ ParserBase<Impl>::ParseYieldExpression() {
     impl()->RecordSuspendSourceRange(yieldstar, PositionAfterSemicolon());
     function_state_->AddSuspend();
     if (IsAsyncGeneratorFunction(function_state_->kind())) {
-      // iterator_close and delegated_iterator_output suspend ids.
+      // return, iterator_close and delegated_iterator_output suspend ids.
+      function_state_->AddSuspend();
       function_state_->AddSuspend();
       function_state_->AddSuspend();
     }
@@ -2902,7 +2909,7 @@ ParserBase<Impl>::ParseUnaryOrPrefixExpression() {
         return impl()->FailureExpression();
       }
 
-      if (impl()->IsPropertyWithPrivateFieldKey(expression)) {
+      if (impl()->IsPrivateReference(expression)) {
         ReportMessage(MessageTemplate::kDeletePrivateField);
         return impl()->FailureExpression();
       }
@@ -3288,7 +3295,18 @@ ParserBase<Impl>::ParseImportExpressions() {
 
     return impl()->ImportMetaExpression(pos);
   }
-  Expect(Token::LPAREN);
+
+  if (V8_UNLIKELY(peek() != Token::LPAREN)) {
+    if (!parsing_module_) {
+      impl()->ReportMessageAt(scanner()->location(),
+                              MessageTemplate::kImportOutsideModule);
+    } else {
+      ReportUnexpectedToken(Next());
+    }
+    return impl()->FailureExpression();
+  }
+
+  Consume(Token::LPAREN);
   if (peek() == Token::RPAREN) {
     impl()->ReportMessageAt(scanner()->location(),
                             MessageTemplate::kImportMissingSpecifier);
@@ -3329,7 +3347,7 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParseSuperExpression(
       // TODO(rossberg): This might not be the correct FunctionState for the
       // method here.
       expression_scope()->RecordThisUse();
-      UseThis()->set_maybe_assigned();
+      UseThis()->SetMaybeAssigned();
       return impl()->NewSuperCallReference(pos);
     }
   }
@@ -4174,6 +4192,7 @@ ParserBase<Impl>::ParseArrowFunctionLiteral(
   function_literal->set_function_token_position(
       formal_parameters.scope->start_position());
 
+  impl()->RecordFunctionLiteralSourceRange(function_literal);
   impl()->AddFunctionForNameInference(function_literal);
 
   if (V8_UNLIKELY((FLAG_log_function_events))) {
@@ -4249,19 +4268,32 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParseClassLiteral(
     }
     is_constructor &= class_info.has_seen_constructor;
 
-    if (V8_UNLIKELY(property_kind == ClassLiteralProperty::FIELD)) {
+    bool is_field = property_kind == ClassLiteralProperty::FIELD;
+
+    if (V8_UNLIKELY(prop_info.is_private)) {
+      DCHECK(!is_constructor);
+      class_info.requires_brand |= !is_field;
+      impl()->DeclarePrivateClassMember(class_scope, prop_info.name, property,
+                                        property_kind, prop_info.is_static,
+                                        &class_info);
+      impl()->InferFunctionName();
+      continue;
+    }
+
+    if (V8_UNLIKELY(is_field)) {
+      DCHECK(!prop_info.is_private);
       if (prop_info.is_computed_name) {
-        DCHECK(!prop_info.is_private);
         class_info.computed_field_count++;
       }
-
-      impl()->DeclareClassField(class_scope, property, prop_info.name,
-                                prop_info.is_static, prop_info.is_computed_name,
-                                prop_info.is_private, &class_info);
-    } else {
-      impl()->DeclareClassProperty(class_scope, name, property, is_constructor,
-                                   &class_info);
+      impl()->DeclarePublicClassField(class_scope, property,
+                                      prop_info.is_static,
+                                      prop_info.is_computed_name, &class_info);
+      impl()->InferFunctionName();
+      continue;
     }
+
+    impl()->DeclarePublicClassMethod(name, property, is_constructor,
+                                     &class_info);
     impl()->InferFunctionName();
   }
 
@@ -4276,6 +4308,10 @@ typename ParserBase<Impl>::ExpressionT ParserBase<Impl>::ParseClassLiteral(
                             MessageTemplate::kInvalidPrivateFieldResolution,
                             unresolvable->raw_name(), kSyntaxError);
     return impl()->FailureExpression();
+  }
+
+  if (class_info.requires_brand) {
+    class_scope->DeclareBrandVariable(ast_value_factory(), kNoSourcePosition);
   }
 
   return impl()->RewriteClassLiteral(class_scope, name, &class_info,

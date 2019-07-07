@@ -6,13 +6,13 @@
 
 #include "src/regexp/ia32/regexp-macro-assembler-ia32.h"
 
-#include "src/assembler-inl.h"
-#include "src/log.h"
-#include "src/macro-assembler.h"
-#include "src/objects-inl.h"
+#include "src/codegen/assembler-inl.h"
+#include "src/codegen/macro-assembler.h"
+#include "src/logging/log.h"
+#include "src/objects/objects-inl.h"
 #include "src/regexp/regexp-macro-assembler.h"
 #include "src/regexp/regexp-stack.h"
-#include "src/unicode.h"
+#include "src/strings/unicode.h"
 
 namespace v8 {
 namespace internal {

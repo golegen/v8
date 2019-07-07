@@ -4,23 +4,23 @@
 
 #if V8_TARGET_ARCH_ARM64
 
-#include "src/api-arguments.h"
-#include "src/code-factory.h"
-#include "src/counters.h"
+#include "src/api/api-arguments.h"
+#include "src/codegen/code-factory.h"
 #include "src/debug/debug.h"
-#include "src/deoptimizer.h"
-#include "src/frame-constants.h"
-#include "src/frames.h"
+#include "src/deoptimizer/deoptimizer.h"
+#include "src/execution/frame-constants.h"
+#include "src/execution/frames.h"
+#include "src/logging/counters.h"
 // For interpreter_entry_return_pc_offset. TODO(jkummerow): Drop.
+#include "src/codegen/macro-assembler-inl.h"
+#include "src/codegen/register-configuration.h"
 #include "src/heap/heap-inl.h"
-#include "src/macro-assembler-inl.h"
-#include "src/objects-inl.h"
 #include "src/objects/cell.h"
 #include "src/objects/foreign.h"
 #include "src/objects/heap-number.h"
 #include "src/objects/js-generator.h"
+#include "src/objects/objects-inl.h"
 #include "src/objects/smi.h"
-#include "src/register-configuration.h"
 #include "src/runtime/runtime.h"
 #include "src/wasm/wasm-objects.h"
 
@@ -29,17 +29,10 @@ namespace internal {
 
 #define __ ACCESS_MASM(masm)
 
-void Builtins::Generate_Adaptor(MacroAssembler* masm, Address address,
-                                ExitFrameType exit_frame_type) {
+void Builtins::Generate_Adaptor(MacroAssembler* masm, Address address) {
   __ Mov(kJavaScriptCallExtraArg1Register, ExternalReference::Create(address));
-  if (exit_frame_type == BUILTIN_EXIT) {
-    __ Jump(BUILTIN_CODE(masm->isolate(), AdaptorWithBuiltinExitFrame),
-            RelocInfo::CODE_TARGET);
-  } else {
-    DCHECK(exit_frame_type == EXIT);
-    __ Jump(BUILTIN_CODE(masm->isolate(), AdaptorWithExitFrame),
-            RelocInfo::CODE_TARGET);
-  }
+  __ Jump(BUILTIN_CODE(masm->isolate(), AdaptorWithBuiltinExitFrame),
+          RelocInfo::CODE_TARGET);
 }
 
 void Builtins::Generate_InternalArrayConstructor(MacroAssembler* masm) {
@@ -1208,10 +1201,10 @@ void Builtins::Generate_InterpreterEntryTrampoline(MacroAssembler* masm) {
   // 8-bit fields next to each other, so we could just optimize by writing a
   // 16-bit. These static asserts guard our assumption is valid.
   STATIC_ASSERT(BytecodeArray::kBytecodeAgeOffset ==
-                BytecodeArray::kOSRNestingLevelOffset + kCharSize);
+                BytecodeArray::kOsrNestingLevelOffset + kCharSize);
   STATIC_ASSERT(BytecodeArray::kNoAgeBytecodeAge == 0);
   __ Strh(wzr, FieldMemOperand(kInterpreterBytecodeArrayRegister,
-                               BytecodeArray::kOSRNestingLevelOffset));
+                               BytecodeArray::kOsrNestingLevelOffset));
 
   // Load the initial bytecode offset.
   __ Mov(kInterpreterBytecodeOffsetRegister,
@@ -1489,7 +1482,7 @@ static void Generate_InterpreterEnterBytecode(MacroAssembler* masm) {
   __ Ldr(x1, MemOperand(x1));
 
   __ Bind(&trampoline_loaded);
-  __ Add(lr, x1, Operand(interpreter_entry_return_pc_offset->value()));
+  __ Add(lr, x1, Operand(interpreter_entry_return_pc_offset.value()));
 
   // Initialize the dispatch table register.
   __ Mov(
@@ -1690,18 +1683,20 @@ void Generate_ContinueToBuiltinHelper(MacroAssembler* masm,
 
   if (java_script_builtin) __ SmiUntag(kJavaScriptCallArgCountRegister);
 
-  // Load builtin object.
+  // Load builtin index (stored as a Smi) and use it to get the builtin start
+  // address from the builtins table.
   UseScratchRegisterScope temps(masm);
   Register builtin = temps.AcquireX();
-  __ Ldr(builtin,
-         MemOperand(fp, BuiltinContinuationFrameConstants::kBuiltinOffset));
+  __ Ldr(
+      builtin,
+      MemOperand(fp, BuiltinContinuationFrameConstants::kBuiltinIndexOffset));
 
   // Restore fp, lr.
   __ Mov(sp, fp);
   __ Pop(fp, lr);
 
-  // Call builtin.
-  __ JumpCodeObject(builtin);
+  __ LoadEntryFromBuiltinIndex(builtin);
+  __ Jump(builtin);
 }
 }  // namespace
 
@@ -3407,16 +3402,23 @@ void CallApiFunctionAndReturn(MacroAssembler* masm, Register function_address,
 
   DCHECK(function_address.is(x1) || function_address.is(x2));
 
-  Label profiler_disabled;
-  Label end_profiler_check;
+  Label profiler_enabled, end_profiler_check;
   __ Mov(x10, ExternalReference::is_profiling_address(isolate));
   __ Ldrb(w10, MemOperand(x10));
-  __ Cbz(w10, &profiler_disabled);
-  __ Mov(x3, thunk_ref);
-  __ B(&end_profiler_check);
-
-  __ Bind(&profiler_disabled);
-  __ Mov(x3, function_address);
+  __ Cbnz(w10, &profiler_enabled);
+  __ Mov(x10, ExternalReference::address_of_runtime_stats_flag());
+  __ Ldrsw(w10, MemOperand(x10));
+  __ Cbnz(w10, &profiler_enabled);
+  {
+    // Call the api function directly.
+    __ Mov(x3, function_address);
+    __ B(&end_profiler_check);
+  }
+  __ Bind(&profiler_enabled);
+  {
+    // Additional parameter is the address of the actual callback.
+    __ Mov(x3, thunk_ref);
+  }
   __ Bind(&end_profiler_check);
 
   // Save the callee-save registers we are going to use.
@@ -3442,24 +3444,8 @@ void CallApiFunctionAndReturn(MacroAssembler* masm, Register function_address,
   __ Add(level_reg, level_reg, 1);
   __ Str(level_reg, MemOperand(handle_scope_base, kLevelOffset));
 
-  if (FLAG_log_timer_events) {
-    FrameScope frame(masm, StackFrame::MANUAL);
-    __ PushSafepointRegisters();
-    __ Mov(x0, ExternalReference::isolate_address(isolate));
-    __ CallCFunction(ExternalReference::log_enter_external_function(), 1);
-    __ PopSafepointRegisters();
-  }
-
   __ Mov(x10, x3);  // TODO(arm64): Load target into x10 directly.
   __ StoreReturnAddressAndCall(x10);
-
-  if (FLAG_log_timer_events) {
-    FrameScope frame(masm, StackFrame::MANUAL);
-    __ PushSafepointRegisters();
-    __ Mov(x0, ExternalReference::isolate_address(isolate));
-    __ CallCFunction(ExternalReference::log_leave_external_function(), 1);
-    __ PopSafepointRegisters();
-  }
 
   Label promote_scheduled_exception;
   Label delete_allocated_handles;
@@ -3553,7 +3539,7 @@ void Builtins::Generate_CallApiCallback(MacroAssembler* masm) {
 
   DCHECK(!AreAliased(api_function_address, argc, call_data, holder, scratch));
 
-  typedef FunctionCallbackArguments FCA;
+  using FCA = FunctionCallbackArguments;
 
   STATIC_ASSERT(FCA::kArgsLength == 6);
   STATIC_ASSERT(FCA::kNewTargetIndex == 5);

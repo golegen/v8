@@ -27,12 +27,12 @@
 
 #include <stdlib.h>
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
 #include "src/base/platform/platform.h"
-#include "src/diy-fp.h"
-#include "src/double.h"
-#include "src/fast-dtoa.h"
+#include "src/numbers/diy-fp.h"
+#include "src/numbers/double.h"
+#include "src/numbers/fast-dtoa.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/gay-precision.h"
 #include "test/cctest/gay-shortest.h"

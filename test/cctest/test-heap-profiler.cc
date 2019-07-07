@@ -31,21 +31,21 @@
 
 #include <memory>
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
 #include "include/v8-profiler.h"
-#include "src/api-inl.h"
-#include "src/assembler-inl.h"
+#include "src/api/api-inl.h"
 #include "src/base/hashmap.h"
 #include "src/base/optional.h"
-#include "src/collector.h"
+#include "src/codegen/assembler-inl.h"
 #include "src/debug/debug.h"
 #include "src/heap/heap-inl.h"
-#include "src/objects-inl.h"
+#include "src/objects/objects-inl.h"
 #include "src/profiler/allocation-tracker.h"
 #include "src/profiler/heap-profiler.h"
 #include "src/profiler/heap-snapshot-generator-inl.h"
 #include "test/cctest/cctest.h"
+#include "test/cctest/collector.h"
 
 using i::AllocationTraceNode;
 using i::AllocationTraceTree;
@@ -1899,7 +1899,7 @@ TEST(GetHeapValueForDeletedObject) {
 }
 
 static int StringCmp(const char* ref, i::String act) {
-  std::unique_ptr<char[]> s_act = act->ToCString();
+  std::unique_ptr<char[]> s_act = act.ToCString();
   int result = strcmp(ref, s_act.get());
   if (result != 0)
     fprintf(stderr, "Expected: \"%s\", Actual: \"%s\"\n", ref, s_act.get());
@@ -2447,8 +2447,6 @@ TEST(ManyLocalsInSharedContext) {
 
 
 TEST(AllocationSitesAreVisible) {
-  if (i::FLAG_lite_mode) return;
-
   LocalContext env;
   v8::Isolate* isolate = env->GetIsolate();
   v8::HandleScope scope(isolate);
@@ -2673,7 +2671,7 @@ TEST(ArrayGrowLeftTrim) {
 }
 
 TEST(TrackHeapAllocationsWithInlining) {
-  v8::HandleScope scope(v8::Isolate::GetCurrent());
+  v8::HandleScope scope(CcTest::isolate());
   LocalContext env;
 
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
@@ -2707,7 +2705,7 @@ TEST(TrackHeapAllocationsWithoutInlining) {
   // Disable inlining
   i::FLAG_max_inlined_bytecode_size = 0;
   i::FLAG_max_inlined_bytecode_size_small = 0;
-  v8::HandleScope scope(v8::Isolate::GetCurrent());
+  v8::HandleScope scope(CcTest::isolate());
   LocalContext env;
 
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
@@ -2754,7 +2752,7 @@ static const char* inline_heap_allocation_source =
 
 TEST(TrackBumpPointerAllocations) {
   i::FLAG_allow_natives_syntax = true;
-  v8::HandleScope scope(v8::Isolate::GetCurrent());
+  v8::HandleScope scope(CcTest::isolate());
   LocalContext env;
 
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
@@ -2809,7 +2807,7 @@ TEST(TrackBumpPointerAllocations) {
 
 
 TEST(TrackV8ApiAllocation) {
-  v8::HandleScope scope(v8::Isolate::GetCurrent());
+  v8::HandleScope scope(CcTest::isolate());
   LocalContext env;
 
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
@@ -3097,7 +3095,7 @@ TEST(EmbedderGraph) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(env->GetIsolate());
   v8::Local<v8::Value> global_object =
       v8::Utils::ToLocal(i::Handle<i::JSObject>(
-          (isolate->context()->native_context()->global_object()), isolate));
+          (isolate->context().native_context().global_object()), isolate));
   global_object_pointer = &global_object;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
   heap_profiler->AddBuildEmbedderGraphCallback(BuildEmbedderGraph, nullptr);
@@ -3161,7 +3159,7 @@ TEST(EmbedderGraphWithNamedEdges) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(env->GetIsolate());
   v8::Local<v8::Value> global_object =
       v8::Utils::ToLocal(i::Handle<i::JSObject>(
-          (isolate->context()->native_context()->global_object()), isolate));
+          (isolate->context().native_context().global_object()), isolate));
   global_object_pointer = &global_object;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
   heap_profiler->AddBuildEmbedderGraphCallback(BuildEmbedderGraphWithNamedEdges,
@@ -3227,7 +3225,7 @@ TEST(EmbedderGraphMultipleCallbacks) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(env->GetIsolate());
   v8::Local<v8::Value> global_object =
       v8::Utils::ToLocal(i::Handle<i::JSObject>(
-          (isolate->context()->native_context()->global_object()), isolate));
+          (isolate->context().native_context().global_object()), isolate));
   global_object_pointer = &global_object;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
   GraphBuildingContext context;
@@ -3304,7 +3302,7 @@ TEST(EmbedderGraphWithWrapperNode) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(env->GetIsolate());
   v8::Local<v8::Value> global_object =
       v8::Utils::ToLocal(i::Handle<i::JSObject>(
-          (isolate->context()->native_context()->global_object()), isolate));
+          (isolate->context().native_context().global_object()), isolate));
   global_object_pointer = &global_object;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
   heap_profiler->AddBuildEmbedderGraphCallback(
@@ -3361,7 +3359,7 @@ TEST(EmbedderGraphWithPrefix) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(env->GetIsolate());
   v8::Local<v8::Value> global_object =
       v8::Utils::ToLocal(i::Handle<i::JSObject>(
-          (isolate->context()->native_context()->global_object()), isolate));
+          (isolate->context().native_context().global_object()), isolate));
   global_object_pointer = &global_object;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
   heap_profiler->AddBuildEmbedderGraphCallback(BuildEmbedderGraphWithPrefix,
@@ -3476,7 +3474,7 @@ static const char* simple_sampling_heap_profiler_script =
     "foo();";
 
 TEST(SamplingHeapProfiler) {
-  v8::HandleScope scope(v8::Isolate::GetCurrent());
+  v8::HandleScope scope(CcTest::isolate());
   LocalContext env;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
 
@@ -3559,7 +3557,7 @@ TEST(SamplingHeapProfiler) {
 }
 
 TEST(SamplingHeapProfilerRateAgnosticEstimates) {
-  v8::HandleScope scope(v8::Isolate::GetCurrent());
+  v8::HandleScope scope(CcTest::isolate());
   LocalContext env;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
 
@@ -3641,7 +3639,7 @@ TEST(SamplingHeapProfilerRateAgnosticEstimates) {
 }
 
 TEST(SamplingHeapProfilerApiAllocation) {
-  v8::HandleScope scope(v8::Isolate::GetCurrent());
+  v8::HandleScope scope(CcTest::isolate());
   LocalContext env;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
 
@@ -3664,7 +3662,7 @@ TEST(SamplingHeapProfilerApiAllocation) {
 }
 
 TEST(SamplingHeapProfilerApiSamples) {
-  v8::HandleScope scope(v8::Isolate::GetCurrent());
+  v8::HandleScope scope(CcTest::isolate());
   LocalContext env;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
 
@@ -3709,7 +3707,7 @@ TEST(SamplingHeapProfilerApiSamples) {
 }
 
 TEST(SamplingHeapProfilerLeftTrimming) {
-  v8::HandleScope scope(v8::Isolate::GetCurrent());
+  v8::HandleScope scope(CcTest::isolate());
   LocalContext env;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
 
@@ -3744,7 +3742,7 @@ TEST(SamplingHeapProfilerPretenuredInlineAllocations) {
     return;
   }
 
-  v8::HandleScope scope(v8::Isolate::GetCurrent());
+  v8::HandleScope scope(CcTest::isolate());
   LocalContext env;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
 
@@ -3809,7 +3807,7 @@ TEST(SamplingHeapProfilerPretenuredInlineAllocations) {
 }
 
 TEST(SamplingHeapProfilerLargeInterval) {
-  v8::HandleScope scope(v8::Isolate::GetCurrent());
+  v8::HandleScope scope(CcTest::isolate());
   LocalContext env;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
 
@@ -3847,7 +3845,7 @@ TEST(HeapSnapshotPrototypeNotJSReceiver) {
 TEST(SamplingHeapProfilerSampleDuringDeopt) {
   i::FLAG_allow_natives_syntax = true;
 
-  v8::HandleScope scope(v8::Isolate::GetCurrent());
+  v8::HandleScope scope(CcTest::isolate());
   LocalContext env;
   v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
 
@@ -3910,7 +3908,7 @@ TEST(WeakReference) {
 
   i::Handle<i::Object> obj = v8::Utils::OpenHandle(*script);
   i::Handle<i::SharedFunctionInfo> shared_function =
-      i::Handle<i::SharedFunctionInfo>(i::JSFunction::cast(*obj)->shared(),
+      i::Handle<i::SharedFunctionInfo>(i::JSFunction::cast(*obj).shared(),
                                        i_isolate);
   i::Handle<i::ClosureFeedbackCellArray> feedback_cell_array =
       i::ClosureFeedbackCellArray::New(i_isolate, shared_function);

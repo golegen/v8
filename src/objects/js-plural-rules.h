@@ -12,17 +12,20 @@
 #include <set>
 #include <string>
 
+#include "src/execution/isolate.h"
 #include "src/heap/factory.h"
-#include "src/isolate.h"
-#include "src/objects.h"
 #include "src/objects/intl-objects.h"
 #include "src/objects/managed.h"
+#include "src/objects/objects.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
 
 namespace U_ICU_NAMESPACE {
 class PluralRules;
+namespace number {
+class LocalizedNumberFormatter;
+}  //  namespace number
 }  //  namespace U_ICU_NAMESPACE
 
 namespace v8 {
@@ -30,9 +33,9 @@ namespace internal {
 
 class JSPluralRules : public JSObject {
  public:
-  V8_WARN_UNUSED_RESULT static MaybeHandle<JSPluralRules> Initialize(
-      Isolate* isolate, Handle<JSPluralRules> plural_rules,
-      Handle<Object> locales, Handle<Object> options);
+  V8_WARN_UNUSED_RESULT static MaybeHandle<JSPluralRules> New(
+      Isolate* isolate, Handle<Map> map, Handle<Object> locales,
+      Handle<Object> options);
 
   static Handle<JSObject> ResolvedOptions(Isolate* isolate,
                                           Handle<JSPluralRules> plural_rules);
@@ -75,7 +78,8 @@ class JSPluralRules : public JSObject {
   DECL_ACCESSORS(locale, String)
   DECL_INT_ACCESSORS(flags)
   DECL_ACCESSORS(icu_plural_rules, Managed<icu::PluralRules>)
-  DECL_ACCESSORS(icu_decimal_format, Managed<icu::DecimalFormat>)
+  DECL_ACCESSORS(icu_number_formatter,
+                 Managed<icu::number::LocalizedNumberFormatter>)
 
   OBJECT_CONSTRUCTORS(JSPluralRules, JSObject);
 };

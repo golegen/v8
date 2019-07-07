@@ -4,15 +4,15 @@
 
 #include <utility>
 
-#include "src/api-inl.h"
+#include "src/api/api-inl.h"
+#include "src/codegen/optimized-compilation-info.h"
 #include "src/compiler/pipeline.h"
 #include "src/debug/debug-interface.h"
-#include "src/execution.h"
-#include "src/handles.h"
+#include "src/execution/execution.h"
+#include "src/handles/handles.h"
 #include "src/interpreter/bytecode-array-builder.h"
 #include "src/interpreter/interpreter.h"
-#include "src/objects-inl.h"
-#include "src/optimized-compilation-info.h"
+#include "src/objects/objects-inl.h"
 #include "src/parsing/parse-info.h"
 #include "test/cctest/cctest.h"
 
@@ -115,7 +115,8 @@ class BytecodeGraphTester {
             .ToLocalChecked());
     Handle<JSFunction> function =
         Handle<JSFunction>::cast(v8::Utils::OpenHandle(*api_function));
-    CHECK(function->shared()->HasBytecodeArray());
+    JSFunction::EnsureFeedbackVector(function);
+    CHECK(function->shared().HasBytecodeArray());
 
     Zone zone(isolate_->allocator(), ZONE_NAME);
     Handle<SharedFunctionInfo> shared(function->shared(), isolate_);

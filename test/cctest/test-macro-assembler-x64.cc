@@ -27,16 +27,16 @@
 
 #include <stdlib.h>
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
 #include "src/base/platform/platform.h"
+#include "src/codegen/macro-assembler.h"
+#include "src/codegen/x64/assembler-x64-inl.h"
+#include "src/execution/simulator.h"
 #include "src/heap/factory.h"
-#include "src/macro-assembler.h"
-#include "src/objects-inl.h"
+#include "src/objects/objects-inl.h"
 #include "src/objects/smi.h"
-#include "src/ostreams.h"
-#include "src/simulator.h"
-#include "src/x64/assembler-x64-inl.h"
+#include "src/utils/ostreams.h"
 #include "test/cctest/cctest.h"
 #include "test/common/assembler-tester.h"
 
@@ -53,7 +53,7 @@ namespace test_macro_assembler_x64 {
 // This calling convention is used on Linux, with GCC, and on Mac OS,
 // with GCC.  A different convention is used on 64-bit windows.
 
-typedef int(F0)();
+using F0 = int();
 
 #define __ masm->
 
@@ -84,7 +84,7 @@ TEST(Smi) {
         Smi smi_from_int = Smi::FromInt(static_cast<int32_t>(number));
         CHECK_EQ(smi_from_int, smi_from_intptr);
       }
-      int64_t smi_value = smi_from_intptr->value();
+      int64_t smi_value = smi_from_intptr.value();
       CHECK_EQ(number, smi_value);
     }
   }
@@ -454,9 +454,9 @@ TEST(EmbeddedObj) {
   StdoutStream os;
   code->Print(os);
 #endif
-  typedef int64_t (*myF0)();
-  myF0 f = FUNCTION_CAST<myF0>(code->entry());
-  Object result = static_cast<Object>(f());
+  using myF0 = Address();
+  auto f = GeneratedCode<myF0>::FromAddress(isolate, code->entry());
+  Object result = Object(f.Call());
   CHECK_EQ(old_array->ptr(), result.ptr());
 
   // Collect garbage to ensure reloc info can be walked by the heap.

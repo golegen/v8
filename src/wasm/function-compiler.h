@@ -5,7 +5,7 @@
 #ifndef V8_WASM_FUNCTION_COMPILER_H_
 #define V8_WASM_FUNCTION_COMPILER_H_
 
-#include "src/code-desc.h"
+#include "src/codegen/code-desc.h"
 #include "src/trap-handler/trap-handler.h"
 #include "src/wasm/compilation-environment.h"
 #include "src/wasm/function-body-decoder.h"
@@ -18,6 +18,7 @@ namespace internal {
 
 class AssemblerBuffer;
 class Counters;
+class OptimizedCompilationJob;
 
 namespace wasm {
 
@@ -43,6 +44,12 @@ struct WasmCompilationResult {
  public:
   MOVE_ONLY_WITH_DEFAULT_CONSTRUCTORS(WasmCompilationResult);
 
+  enum Kind : int8_t {
+    kFunction,
+    kWasmToJsWrapper,
+    kInterpreterEntry,
+  };
+
   bool succeeded() const { return code_desc.buffer != nullptr; }
   bool failed() const { return !succeeded(); }
   operator bool() const { return succeeded(); }
@@ -53,9 +60,10 @@ struct WasmCompilationResult {
   uint32_t tagged_parameter_slots = 0;
   OwnedVector<byte> source_positions;
   OwnedVector<trap_handler::ProtectedInstructionData> protected_instructions;
-  int func_index;
+  int func_index = static_cast<int>(kAnonymousFuncIndex);
   ExecutionTier requested_tier;
   ExecutionTier result_tier;
+  Kind kind = kFunction;
 };
 
 class V8_EXPORT_PRIVATE WasmCompilationUnit final {
@@ -70,12 +78,21 @@ class V8_EXPORT_PRIVATE WasmCompilationUnit final {
       Counters*, WasmFeatures* detected);
 
   ExecutionTier tier() const { return tier_; }
+  int func_index() const { return func_index_; }
 
   static void CompileWasmFunction(Isolate*, NativeModule*,
                                   WasmFeatures* detected, const WasmFunction*,
                                   ExecutionTier);
 
  private:
+  WasmCompilationResult ExecuteFunctionCompilation(
+      WasmEngine* wasm_engine, CompilationEnv* env,
+      const std::shared_ptr<WireBytesStorage>& wire_bytes_storage,
+      Counters* counters, WasmFeatures* detected);
+
+  WasmCompilationResult ExecuteImportWrapperCompilation(WasmEngine* engine,
+                                                        CompilationEnv* env);
+
   int func_index_;
   ExecutionTier tier_;
 };
@@ -84,6 +101,24 @@ class V8_EXPORT_PRIVATE WasmCompilationUnit final {
 // efficiently pass it by value.
 ASSERT_TRIVIALLY_COPYABLE(WasmCompilationUnit);
 STATIC_ASSERT(sizeof(WasmCompilationUnit) <= 2 * kSystemPointerSize);
+
+class V8_EXPORT_PRIVATE JSToWasmWrapperCompilationUnit final {
+ public:
+  JSToWasmWrapperCompilationUnit(Isolate* isolate, FunctionSig* sig,
+                                 bool is_import);
+  ~JSToWasmWrapperCompilationUnit();
+
+  void Prepare(Isolate* isolate);
+  void Execute();
+  Handle<Code> Finalize(Isolate* isolate);
+
+  // Run a compilation unit synchronously.
+  static Handle<Code> CompileJSToWasmWrapper(Isolate* isolate, FunctionSig* sig,
+                                             bool is_import);
+
+ private:
+  std::unique_ptr<OptimizedCompilationJob> job_;
+};
 
 }  // namespace wasm
 }  // namespace internal

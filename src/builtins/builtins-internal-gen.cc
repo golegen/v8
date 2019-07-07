@@ -2,15 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/api.h"
+#include "src/api/api.h"
 #include "src/builtins/builtins-utils-gen.h"
 #include "src/builtins/builtins.h"
-#include "src/code-stub-assembler.h"
-#include "src/counters.h"
+#include "src/codegen/code-stub-assembler.h"
+#include "src/codegen/macro-assembler.h"
 #include "src/heap/heap-inl.h"  // crbug.com/v8/8499
 #include "src/ic/accessor-assembler.h"
 #include "src/ic/keyed-store-generic.h"
-#include "src/macro-assembler.h"
+#include "src/logging/counters.h"
 #include "src/objects/debug-objects.h"
 #include "src/objects/shared-function-info.h"
 #include "src/runtime/runtime.h"
@@ -614,8 +614,9 @@ class SetOrCopyDataPropertiesAssembler : public CodeStubAssembler {
     Label if_done(this), if_noelements(this),
         if_sourcenotjsobject(this, Label::kDeferred);
 
-    // JSValue wrappers for numbers don't have any enumerable own properties,
-    // so we can immediately skip the whole operation if {source} is a Smi.
+    // JSPrimitiveWrapper wrappers for numbers don't have any enumerable own
+    // properties, so we can immediately skip the whole operation if {source} is
+    // a Smi.
     GotoIf(TaggedIsSmi(source), &if_done);
 
     // Otherwise check if {source} is a proper JSObject, and if not, defer
@@ -767,19 +768,7 @@ TF_BUILTIN(SameValueNumbersOnly, CodeStubAssembler) {
   Return(FalseConstant());
 }
 
-class InternalBuiltinsAssembler : public CodeStubAssembler {
- public:
-  explicit InternalBuiltinsAssembler(compiler::CodeAssemblerState* state)
-      : CodeStubAssembler(state) {}
-
-  template <typename Descriptor>
-  void GenerateAdaptorWithExitFrameType(
-      Builtins::ExitFrameType exit_frame_type);
-};
-
-template <typename Descriptor>
-void InternalBuiltinsAssembler::GenerateAdaptorWithExitFrameType(
-    Builtins::ExitFrameType exit_frame_type) {
+TF_BUILTIN(AdaptorWithBuiltinExitFrame, CodeStubAssembler) {
   TNode<JSFunction> target = CAST(Parameter(Descriptor::kTarget));
   TNode<Object> new_target = CAST(Parameter(Descriptor::kNewTarget));
   TNode<WordT> c_function =
@@ -803,9 +792,9 @@ void InternalBuiltinsAssembler::GenerateAdaptorWithExitFrameType(
       argc,
       Int32Constant(BuiltinExitFrameConstants::kNumExtraArgsWithReceiver));
 
-  TNode<Code> code = HeapConstant(
-      CodeFactory::CEntry(isolate(), 1, kDontSaveFPRegs, kArgvOnStack,
-                          exit_frame_type == Builtins::BUILTIN_EXIT));
+  const bool builtin_exit_frame = true;
+  TNode<Code> code = HeapConstant(CodeFactory::CEntry(
+      isolate(), 1, kDontSaveFPRegs, kArgvOnStack, builtin_exit_frame));
 
   // Unconditionally push argc, target and new target as extra stack arguments.
   // They will be used by stack frame iterators when constructing stack trace.
@@ -816,14 +805,6 @@ void InternalBuiltinsAssembler::GenerateAdaptorWithExitFrameType(
                SmiFromInt32(argc),  // additional stack argument 2
                target,              // additional stack argument 3
                new_target);         // additional stack argument 4
-}
-
-TF_BUILTIN(AdaptorWithExitFrame, InternalBuiltinsAssembler) {
-  GenerateAdaptorWithExitFrameType<Descriptor>(Builtins::EXIT);
-}
-
-TF_BUILTIN(AdaptorWithBuiltinExitFrame, InternalBuiltinsAssembler) {
-  GenerateAdaptorWithExitFrameType<Descriptor>(Builtins::BUILTIN_EXIT);
 }
 
 TF_BUILTIN(AllocateInYoungGeneration, CodeStubAssembler) {
@@ -927,6 +908,8 @@ TF_BUILTIN(GetProperty, CodeStubAssembler) {
   Node* object = Parameter(Descriptor::kObject);
   Node* key = Parameter(Descriptor::kKey);
   Node* context = Parameter(Descriptor::kContext);
+  // TODO(duongn): consider tailcalling to GetPropertyWithReceiver(object,
+  // object, key, OnNonExistent::kReturnUndefined).
   Label if_notfound(this), if_proxy(this, Label::kDeferred),
       if_slow(this, Label::kDeferred);
 
@@ -952,7 +935,7 @@ TF_BUILTIN(GetProperty, CodeStubAssembler) {
         Goto(if_bailout);
       };
 
-  TryPrototypeChainLookup(object, key, lookup_property_in_holder,
+  TryPrototypeChainLookup(object, object, key, lookup_property_in_holder,
                           lookup_element_in_holder, &if_notfound, &if_slow,
                           &if_proxy);
 
@@ -972,6 +955,71 @@ TF_BUILTIN(GetProperty, CodeStubAssembler) {
     // return undefined from here.
     TailCallBuiltin(Builtins::kProxyGetProperty, context, object, name, object,
                     SmiConstant(OnNonExistent::kReturnUndefined));
+  }
+}
+
+// ES6 [[Get]] operation with Receiver.
+TF_BUILTIN(GetPropertyWithReceiver, CodeStubAssembler) {
+  Node* object = Parameter(Descriptor::kObject);
+  Node* key = Parameter(Descriptor::kKey);
+  Node* context = Parameter(Descriptor::kContext);
+  Node* receiver = Parameter(Descriptor::kReceiver);
+  Node* on_non_existent = Parameter(Descriptor::kOnNonExistent);
+  Label if_notfound(this), if_proxy(this, Label::kDeferred),
+      if_slow(this, Label::kDeferred);
+
+  CodeStubAssembler::LookupInHolder lookup_property_in_holder =
+      [=](Node* receiver, Node* holder, Node* holder_map,
+          Node* holder_instance_type, Node* unique_name, Label* next_holder,
+          Label* if_bailout) {
+        VARIABLE(var_value, MachineRepresentation::kTagged);
+        Label if_found(this);
+        TryGetOwnProperty(context, receiver, holder, holder_map,
+                          holder_instance_type, unique_name, &if_found,
+                          &var_value, next_holder, if_bailout);
+        BIND(&if_found);
+        Return(var_value.value());
+      };
+
+  CodeStubAssembler::LookupInHolder lookup_element_in_holder =
+      [=](Node* receiver, Node* holder, Node* holder_map,
+          Node* holder_instance_type, Node* index, Label* next_holder,
+          Label* if_bailout) {
+        // Not supported yet.
+        Use(next_holder);
+        Goto(if_bailout);
+      };
+
+  TryPrototypeChainLookup(receiver, object, key, lookup_property_in_holder,
+                          lookup_element_in_holder, &if_notfound, &if_slow,
+                          &if_proxy);
+
+  BIND(&if_notfound);
+  Label throw_reference_error(this);
+  GotoIf(WordEqual(on_non_existent,
+                   SmiConstant(OnNonExistent::kThrowReferenceError)),
+         &throw_reference_error);
+  CSA_ASSERT(this, WordEqual(on_non_existent,
+                             SmiConstant(OnNonExistent::kReturnUndefined)));
+  Return(UndefinedConstant());
+
+  BIND(&throw_reference_error);
+  Return(CallRuntime(Runtime::kThrowReferenceError, context, key));
+
+  BIND(&if_slow);
+  TailCallRuntime(Runtime::kGetPropertyWithReceiver, context, object, key,
+                  receiver, on_non_existent);
+
+  BIND(&if_proxy);
+  {
+    // Convert the {key} to a Name first.
+    Node* name = CallBuiltin(Builtins::kToName, context, key);
+
+    // The {object} is a JSProxy instance, look up the {name} on it, passing
+    // {object} both as receiver and holder. If {name} is absent we can safely
+    // return undefined from here.
+    TailCallBuiltin(Builtins::kProxyGetProperty, context, object, name,
+                    receiver, on_non_existent);
   }
 }
 

@@ -4,9 +4,10 @@
 
 #include "src/compiler/compilation-dependencies.h"
 
-#include "src/handles-inl.h"
-#include "src/objects-inl.h"
+#include "src/compiler/compilation-dependency.h"
+#include "src/handles/handles-inl.h"
 #include "src/objects/allocation-site-inl.h"
+#include "src/objects/objects-inl.h"
 #include "src/zone/zone-handle-set.h"
 
 namespace v8 {
@@ -17,18 +18,7 @@ CompilationDependencies::CompilationDependencies(JSHeapBroker* broker,
                                                  Zone* zone)
     : zone_(zone), broker_(broker), dependencies_(zone) {}
 
-class CompilationDependencies::Dependency : public ZoneObject {
- public:
-  virtual bool IsValid() const = 0;
-  virtual void PrepareInstall() const {}
-  virtual void Install(const MaybeObjectHandle& code) const = 0;
-
-#ifdef DEBUG
-  virtual bool IsPretenureModeDependency() const { return false; }
-#endif
-};
-
-class InitialMapDependency final : public CompilationDependencies::Dependency {
+class InitialMapDependency final : public CompilationDependency {
  public:
   // TODO(neis): Once the concurrent compiler frontend is always-on, we no
   // longer need to explicitly store the initial map.
@@ -56,8 +46,7 @@ class InitialMapDependency final : public CompilationDependencies::Dependency {
   MapRef initial_map_;
 };
 
-class PrototypePropertyDependency final
-    : public CompilationDependencies::Dependency {
+class PrototypePropertyDependency final : public CompilationDependency {
  public:
   // TODO(neis): Once the concurrent compiler frontend is always-on, we no
   // longer need to explicitly store the prototype.
@@ -96,7 +85,7 @@ class PrototypePropertyDependency final
   ObjectRef prototype_;
 };
 
-class StableMapDependency final : public CompilationDependencies::Dependency {
+class StableMapDependency final : public CompilationDependency {
  public:
   explicit StableMapDependency(const MapRef& map) : map_(map) {
     DCHECK(map_.is_stable());
@@ -114,7 +103,7 @@ class StableMapDependency final : public CompilationDependencies::Dependency {
   MapRef map_;
 };
 
-class TransitionDependency final : public CompilationDependencies::Dependency {
+class TransitionDependency final : public CompilationDependency {
  public:
   explicit TransitionDependency(const MapRef& map) : map_(map) {
     DCHECK(!map_.is_deprecated());
@@ -132,8 +121,7 @@ class TransitionDependency final : public CompilationDependencies::Dependency {
   MapRef map_;
 };
 
-class PretenureModeDependency final
-    : public CompilationDependencies::Dependency {
+class PretenureModeDependency final : public CompilationDependency {
  public:
   // TODO(neis): Once the concurrent compiler frontend is always-on, we no
   // longer need to explicitly store the mode.
@@ -163,8 +151,7 @@ class PretenureModeDependency final
   AllocationType allocation_;
 };
 
-class FieldRepresentationDependency final
-    : public CompilationDependencies::Dependency {
+class FieldRepresentationDependency final : public CompilationDependency {
  public:
   // TODO(neis): Once the concurrent compiler frontend is always-on, we no
   // longer need to explicitly store the representation.
@@ -181,9 +168,8 @@ class FieldRepresentationDependency final
   bool IsValid() const override {
     DisallowHeapAllocation no_heap_allocation;
     Handle<Map> owner = owner_.object();
-    return representation_.Equals(owner->instance_descriptors()
-                                      ->GetDetails(descriptor_)
-                                      .representation());
+    return representation_.Equals(
+        owner->instance_descriptors().GetDetails(descriptor_).representation());
   }
 
   void Install(const MaybeObjectHandle& code) const override {
@@ -198,7 +184,7 @@ class FieldRepresentationDependency final
   Representation representation_;
 };
 
-class FieldTypeDependency final : public CompilationDependencies::Dependency {
+class FieldTypeDependency final : public CompilationDependency {
  public:
   // TODO(neis): Once the concurrent compiler frontend is always-on, we no
   // longer need to explicitly store the type.
@@ -213,7 +199,7 @@ class FieldTypeDependency final : public CompilationDependencies::Dependency {
     DisallowHeapAllocation no_heap_allocation;
     Handle<Map> owner = owner_.object();
     Handle<Object> type = type_.object();
-    return *type == owner->instance_descriptors()->GetFieldType(descriptor_);
+    return *type == owner->instance_descriptors().GetFieldType(descriptor_);
   }
 
   void Install(const MaybeObjectHandle& code) const override {
@@ -228,8 +214,7 @@ class FieldTypeDependency final : public CompilationDependencies::Dependency {
   ObjectRef type_;
 };
 
-class FieldConstnessDependency final
-    : public CompilationDependencies::Dependency {
+class FieldConstnessDependency final : public CompilationDependency {
  public:
   FieldConstnessDependency(const MapRef& owner, int descriptor)
       : owner_(owner), descriptor_(descriptor) {
@@ -242,7 +227,7 @@ class FieldConstnessDependency final
     DisallowHeapAllocation no_heap_allocation;
     Handle<Map> owner = owner_.object();
     return PropertyConstness::kConst ==
-           owner->instance_descriptors()->GetDetails(descriptor_).constness();
+           owner->instance_descriptors().GetDetails(descriptor_).constness();
   }
 
   void Install(const MaybeObjectHandle& code) const override {
@@ -256,8 +241,7 @@ class FieldConstnessDependency final
   int descriptor_;
 };
 
-class GlobalPropertyDependency final
-    : public CompilationDependencies::Dependency {
+class GlobalPropertyDependency final : public CompilationDependency {
  public:
   // TODO(neis): Once the concurrent compiler frontend is always-on, we no
   // longer need to explicitly store the type and the read_only flag.
@@ -295,7 +279,7 @@ class GlobalPropertyDependency final
   bool read_only_;
 };
 
-class ProtectorDependency final : public CompilationDependencies::Dependency {
+class ProtectorDependency final : public CompilationDependency {
  public:
   explicit ProtectorDependency(const PropertyCellRef& cell) : cell_(cell) {
     DCHECK_EQ(cell_.value().AsSmi(), Isolate::kProtectorValid);
@@ -316,8 +300,7 @@ class ProtectorDependency final : public CompilationDependencies::Dependency {
   PropertyCellRef cell_;
 };
 
-class ElementsKindDependency final
-    : public CompilationDependencies::Dependency {
+class ElementsKindDependency final : public CompilationDependency {
  public:
   // TODO(neis): Once the concurrent compiler frontend is always-on, we no
   // longer need to explicitly store the elements kind.
@@ -332,7 +315,7 @@ class ElementsKindDependency final
   bool IsValid() const override {
     Handle<AllocationSite> site = site_.object();
     ElementsKind kind = site->PointsToLiteral()
-                            ? site->boilerplate()->GetElementsKind()
+                            ? site->boilerplate().GetElementsKind()
                             : site->GetElementsKind();
     return kind_ == kind;
   }
@@ -350,7 +333,7 @@ class ElementsKindDependency final
 };
 
 class InitialMapInstanceSizePredictionDependency final
-    : public CompilationDependencies::Dependency {
+    : public CompilationDependency {
  public:
   InitialMapInstanceSizePredictionDependency(const JSFunctionRef& function,
                                              int instance_size)
@@ -372,9 +355,8 @@ class InitialMapInstanceSizePredictionDependency final
 
   void Install(const MaybeObjectHandle& code) const override {
     SLOW_DCHECK(IsValid());
-    DCHECK(!function_.object()
-                ->initial_map()
-                ->IsInobjectSlackTrackingInProgress());
+    DCHECK(
+        !function_.object()->initial_map().IsInobjectSlackTrackingInProgress());
   }
 
  private:
@@ -382,7 +364,8 @@ class InitialMapInstanceSizePredictionDependency final
   int instance_size_;
 };
 
-void CompilationDependencies::RecordDependency(Dependency const* dependency) {
+void CompilationDependencies::RecordDependency(
+    CompilationDependency const* dependency) {
   if (dependency != nullptr) dependencies_.push_front(dependency);
 }
 
@@ -567,6 +550,11 @@ namespace {
 // This function expects to never see a JSProxy.
 void DependOnStablePrototypeChain(CompilationDependencies* deps, MapRef map,
                                   base::Optional<JSObjectRef> last_prototype) {
+  // TODO(neis): Remove heap access (SerializePrototype call).
+  AllowCodeDependencyChange dependency_change_;
+  AllowHandleAllocation handle_allocation_;
+  AllowHandleDereference handle_dereference_;
+  AllowHeapAllocation heap_allocation_;
   while (true) {
     map.SerializePrototype();
     HeapObjectRef proto = map.prototype();
@@ -599,7 +587,7 @@ void CompilationDependencies::DependOnStablePrototypeChains(
   }
 }
 template void CompilationDependencies::DependOnStablePrototypeChains(
-    MapHandles const& receiver_maps, WhereToStart start,
+    ZoneVector<Handle<Map>> const& receiver_maps, WhereToStart start,
     base::Optional<JSObjectRef> last_prototype);
 template void CompilationDependencies::DependOnStablePrototypeChains(
     ZoneHandleSet<Map> const& receiver_maps, WhereToStart start,
@@ -637,7 +625,7 @@ CompilationDependencies::DependOnInitialMapInstanceSizePrediction(
   return SlackTrackingPrediction(initial_map, instance_size);
 }
 
-CompilationDependencies::Dependency const*
+CompilationDependency const*
 CompilationDependencies::TransitionDependencyOffTheRecord(
     const MapRef& target_map) const {
   if (target_map.CanBeDeprecated()) {
@@ -648,7 +636,7 @@ CompilationDependencies::TransitionDependencyOffTheRecord(
   }
 }
 
-CompilationDependencies::Dependency const*
+CompilationDependency const*
 CompilationDependencies::FieldRepresentationDependencyOffTheRecord(
     const MapRef& map, int descriptor) const {
   MapRef owner = map.FindFieldOwner(descriptor);
@@ -659,7 +647,7 @@ CompilationDependencies::FieldRepresentationDependencyOffTheRecord(
                                                    details.representation());
 }
 
-CompilationDependencies::Dependency const*
+CompilationDependency const*
 CompilationDependencies::FieldTypeDependencyOffTheRecord(const MapRef& map,
                                                          int descriptor) const {
   MapRef owner = map.FindFieldOwner(descriptor);

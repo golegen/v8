@@ -27,15 +27,15 @@
 
 #include <iostream>  // NOLINT(readability/streams)
 
-#include "src/assembler-inl.h"
 #include "src/base/utils/random-number-generator.h"
-#include "src/disassembler.h"
-#include "src/double.h"
+#include "src/codegen/assembler-inl.h"
+#include "src/codegen/macro-assembler.h"
+#include "src/diagnostics/disassembler.h"
+#include "src/execution/simulator.h"
 #include "src/heap/factory.h"
-#include "src/macro-assembler.h"
-#include "src/ostreams.h"
-#include "src/simulator.h"
-#include "src/v8.h"
+#include "src/init/v8.h"
+#include "src/numbers/double.h"
+#include "src/utils/ostreams.h"
 #include "test/cctest/assembler-helper-arm.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/compiler/value-helper.h"
@@ -156,11 +156,11 @@ TEST(3) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct T {
     int i;
     char c;
     int16_t s;
-  } T;
+  };
   T t;
 
   Assembler assm(AssemblerOptions{});
@@ -208,7 +208,7 @@ TEST(4) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct T {
     double a;
     double b;
     double c;
@@ -225,7 +225,7 @@ TEST(4) {
     float p;
     float x;
     float y;
-  } T;
+  };
   T t;
 
   // Create a function that accepts &t, and loads, manipulates, and stores
@@ -452,7 +452,6 @@ static void TestRoundingMode(VCVTTypes types,
 
     default:
       UNREACHABLE();
-      break;
   }
   // Check for vfp exceptions
   __ vmrs(r2);
@@ -600,7 +599,7 @@ TEST(8) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct D {
     double a;
     double b;
     double c;
@@ -609,10 +608,10 @@ TEST(8) {
     double f;
     double g;
     double h;
-  } D;
+  };
   D d;
 
-  typedef struct {
+  struct F {
     float a;
     float b;
     float c;
@@ -621,7 +620,7 @@ TEST(8) {
     float f;
     float g;
     float h;
-  } F;
+  };
   F f;
 
   // Create a function that uses vldm/vstm to move some double and
@@ -704,7 +703,7 @@ TEST(9) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct D {
     double a;
     double b;
     double c;
@@ -713,10 +712,10 @@ TEST(9) {
     double f;
     double g;
     double h;
-  } D;
+  };
   D d;
 
-  typedef struct {
+  struct F {
     float a;
     float b;
     float c;
@@ -725,7 +724,7 @@ TEST(9) {
     float f;
     float g;
     float h;
-  } F;
+  };
   F f;
 
   // Create a function that uses vldm/vstm to move some double and
@@ -812,7 +811,7 @@ TEST(10) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct D {
     double a;
     double b;
     double c;
@@ -821,10 +820,10 @@ TEST(10) {
     double f;
     double g;
     double h;
-  } D;
+  };
   D d;
 
-  typedef struct {
+  struct F {
     float a;
     float b;
     float c;
@@ -833,7 +832,7 @@ TEST(10) {
     float f;
     float g;
     float h;
-  } F;
+  };
   F f;
 
   // Create a function that uses vldm/vstm to move some double and
@@ -916,12 +915,12 @@ TEST(11) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct I {
     int32_t a;
     int32_t b;
     int32_t c;
     int32_t d;
-  } I;
+  };
   I i;
 
   i.a = 0xABCD0001;
@@ -997,7 +996,7 @@ TEST(13) {
     return;
   }
 
-  typedef struct {
+  struct T {
     double a;
     double b;
     double c;
@@ -1009,7 +1008,7 @@ TEST(13) {
     double k;
     uint32_t low;
     uint32_t high;
-  } T;
+  };
   T t;
 
   // Create a function that accepts &t, and loads, manipulates, and stores
@@ -1115,14 +1114,14 @@ TEST(14) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct T {
     double left;
     double right;
     double add_result;
     double sub_result;
     double mul_result;
     double div_result;
-  } T;
+  };
   T t;
 
   // Create a function that makes the four basic operations.
@@ -1225,7 +1224,7 @@ TEST(15) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct T {
     uint32_t src0;
     uint32_t src1;
     uint32_t src2;
@@ -1299,7 +1298,7 @@ TEST(15) {
     uint32_t vtrnd8a[2], vtrnd8b[2], vtrnd16a[2], vtrnd16b[2], vtrnd32a[2],
         vtrnd32b[2];
     uint32_t vtbl[2], vtbx[2];
-  } T;
+  };
   T t;
 
   // Create a function that accepts &t, and loads, manipulates, and stores
@@ -2264,7 +2263,7 @@ TEST(16) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct T {
     uint32_t src0;
     uint32_t src1;
     uint32_t src2;
@@ -2273,7 +2272,7 @@ TEST(16) {
     uint32_t dst2;
     uint32_t dst3;
     uint32_t dst4;
-  } T;
+  };
   T t;
 
   // Create a function that accepts &t, and loads, manipulates, and stores
@@ -2713,10 +2712,10 @@ TEST(rbit) {
   if (CpuFeatures::IsSupported(ARMv7)) {
     CpuFeatureScope scope(&assm, ARMv7);
 
-    typedef struct {
+    struct T {
       uint32_t input;
       uint32_t result;
-    } T;
+    };
     T t;
 
     __ ldr(r1, MemOperand(r0, offsetof(T, input)));
@@ -2890,14 +2889,14 @@ TEST(ARMv8_float32_vrintX) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct T {
     float input;
     float ar;
     float nr;
     float mr;
     float pr;
     float zr;
-  } T;
+  };
   T t;
 
   // Create a function that accepts &t, and loads, manipulates, and stores
@@ -2990,14 +2989,14 @@ TEST(ARMv8_vrintX) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct T {
     double input;
     double ar;
     double nr;
     double mr;
     double pr;
     double zr;
-  } T;
+  };
   T t;
 
   // Create a function that accepts &t, and loads, manipulates, and stores
@@ -3621,11 +3620,11 @@ TEST(unaligned_loads) {
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  typedef struct {
+  struct T {
     uint32_t ldrh;
     uint32_t ldrsh;
     uint32_t ldr;
-  } T;
+  };
   T t;
 
   Assembler assm(AssemblerOptions{});
@@ -3729,14 +3728,14 @@ TEST(vswp) {
   HandleScope scope(isolate);
   Assembler assm(AssemblerOptions{});
 
-  typedef struct {
+  struct T {
     uint64_t vswp_d0;
     uint64_t vswp_d1;
     uint64_t vswp_d30;
     uint64_t vswp_d31;
     uint32_t vswp_q4[4];
     uint32_t vswp_q5[4];
-  } T;
+  };
   T t;
 
   __ stm(db_w, sp, r4.bit() | r5.bit() | r6.bit() | r7.bit() | lr.bit());

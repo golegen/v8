@@ -7,10 +7,10 @@
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/representation-change.h"
 #include "src/compiler/type-cache.h"
-#include "src/objects-inl.h"
+#include "src/objects/objects-inl.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/compiler/codegen-tester.h"
-#include "test/cctest/compiler/graph-builder-tester.h"
+#include "test/cctest/compiler/graph-and-builders.h"
 #include "test/cctest/compiler/value-helper.h"
 
 namespace v8 {
@@ -376,8 +376,16 @@ TEST(Word64) {
               TypeCache::Get()->kUint16, MachineRepresentation::kWord64);
   CheckChange(IrOpcode::kChangeInt32ToInt64, MachineRepresentation::kWord32,
               Type::Signed32(), MachineRepresentation::kWord64);
+  CheckChange(
+      IrOpcode::kChangeInt32ToInt64, MachineRepresentation::kWord32,
+      Type::Signed32OrMinusZero(), MachineRepresentation::kWord64,
+      UseInfo(MachineRepresentation::kWord64, Truncation::Any(kIdentifyZeros)));
   CheckChange(IrOpcode::kChangeUint32ToUint64, MachineRepresentation::kWord32,
               Type::Unsigned32(), MachineRepresentation::kWord64);
+  CheckChange(
+      IrOpcode::kChangeUint32ToUint64, MachineRepresentation::kWord32,
+      Type::Unsigned32OrMinusZero(), MachineRepresentation::kWord64,
+      UseInfo(MachineRepresentation::kWord64, Truncation::Any(kIdentifyZeros)));
 
   CheckChange(IrOpcode::kTruncateInt64ToInt32, MachineRepresentation::kWord64,
               Type::Signed32(), MachineRepresentation::kWord32);
@@ -544,7 +552,8 @@ TEST(SingleChanges) {
               Type::Number(), MachineRepresentation::kFloat64);
   CheckChange(IrOpcode::kTruncateTaggedToFloat64,
               MachineRepresentation::kTagged, Type::NumberOrUndefined(),
-              MachineRepresentation::kFloat64);
+              UseInfo(MachineRepresentation::kFloat64,
+                      Truncation::OddballAndBigIntToNumber()));
   CheckChange(IrOpcode::kChangeTaggedToFloat64, MachineRepresentation::kTagged,
               Type::Signed31(), MachineRepresentation::kFloat64);
 

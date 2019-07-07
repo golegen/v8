@@ -4,14 +4,16 @@
 
 #include "src/profiler/tick-sample.h"
 
+#include <cinttypes>
+
 #include "include/v8-profiler.h"
-#include "src/asan.h"
-#include "src/counters.h"
-#include "src/frames-inl.h"
+#include "src/execution/frames-inl.h"
+#include "src/execution/simulator.h"
+#include "src/execution/vm-state-inl.h"
 #include "src/heap/heap-inl.h"  // For MemoryAllocator::code_range.
-#include "src/msan.h"
-#include "src/simulator.h"
-#include "src/vm-state-inl.h"
+#include "src/logging/counters.h"
+#include "src/sanitizer/asan.h"
+#include "src/sanitizer/msan.h"
 
 namespace v8 {
 namespace {
@@ -268,9 +270,9 @@ bool TickSample::GetStackSample(Isolate* v8_isolate, RegisterState* regs,
       // bytecode_array might be garbage, so don't actually dereference it. We
       // avoid the frame->GetXXX functions since they call BytecodeArray::cast,
       // which has a heap access in its DCHECK.
-      i::Address bytecode_array = i::Memory<i::Address>(
+      i::Address bytecode_array = base::Memory<i::Address>(
           frame->fp() + i::InterpreterFrameConstants::kBytecodeArrayFromFp);
-      i::Address bytecode_offset = i::Memory<i::Address>(
+      i::Address bytecode_offset = base::Memory<i::Address>(
           frame->fp() + i::InterpreterFrameConstants::kBytecodeOffsetFromFp);
 
       // If the bytecode array is a heap object and the bytecode offset is a
@@ -292,10 +294,12 @@ namespace internal {
 
 void TickSample::Init(Isolate* isolate, const v8::RegisterState& state,
                       RecordCEntryFrame record_c_entry_frame, bool update_stats,
-                      bool use_simulator_reg_state) {
+                      bool use_simulator_reg_state,
+                      base::TimeDelta sampling_interval) {
   v8::TickSample::Init(reinterpret_cast<v8::Isolate*>(isolate), state,
                        record_c_entry_frame, update_stats,
                        use_simulator_reg_state);
+  this->sampling_interval = sampling_interval;
   if (pc == nullptr) return;
   timestamp = base::TimeTicks::HighResolutionNow();
 }
@@ -312,6 +316,8 @@ void TickSample::print() const {
   PrintF(" - %s: %p\n",
          has_external_callback ? "external_callback_entry" : "tos", tos);
   PrintF(" - update_stats: %d\n", update_stats);
+  PrintF(" - sampling_interval: %" PRId64 "\n",
+         sampling_interval.InMicroseconds());
   PrintF("\n");
 }
 

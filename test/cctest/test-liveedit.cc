@@ -27,11 +27,11 @@
 
 #include <stdlib.h>
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
-#include "src/api-inl.h"
+#include "src/api/api-inl.h"
 #include "src/debug/liveedit.h"
-#include "src/objects-inl.h"
+#include "src/objects/objects-inl.h"
 #include "test/cctest/cctest.h"
 
 namespace v8 {
@@ -208,7 +208,7 @@ void PatchFunctions(v8::Local<v8::Context> context, const char* source_a,
       v8::Script::Compile(context, v8_str(isolate, source_a)).ToLocalChecked();
   script_a->Run(context).ToLocalChecked();
   i::Handle<i::Script> i_script_a(
-      i::Script::cast(v8::Utils::OpenHandle(*script_a)->shared()->script()),
+      i::Script::cast(v8::Utils::OpenHandle(*script_a)->shared().script()),
       i_isolate);
 
   if (result) {
@@ -505,7 +505,7 @@ TEST(LiveEditCompileError) {
   CHECK_EQ(result.column_number, 51);
   v8::String::Utf8Value result_message(env->GetIsolate(), result.message);
   CHECK_NOT_NULL(
-      strstr(*result_message, "Uncaught SyntaxError: Unexpected token )"));
+      strstr(*result_message, "Uncaught SyntaxError: Unexpected token ')'"));
 
   {
     v8::Local<v8::String> result =
@@ -541,7 +541,7 @@ TEST(LiveEditFunctionExpression) {
   v8::Local<v8::Function> f =
       script->Run(context).ToLocalChecked().As<v8::Function>();
   i::Handle<i::Script> i_script(
-      i::Script::cast(v8::Utils::OpenHandle(*script)->shared()->script()),
+      i::Script::cast(v8::Utils::OpenHandle(*script)->shared().script()),
       i_isolate);
   debug::LiveEditResult result;
   LiveEdit::PatchScript(

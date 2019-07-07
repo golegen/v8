@@ -9,10 +9,10 @@
 #include "src/ast/ast-value-factory.h"
 #include "src/ast/scopes.h"
 #include "src/base/platform/platform.h"
-#include "src/globals.h"
-#include "src/objects-inl.h"
-#include "src/string-builder-inl.h"
-#include "src/vector.h"
+#include "src/common/globals.h"
+#include "src/objects/objects-inl.h"
+#include "src/strings/string-builder-inl.h"
+#include "src/utils/vector.h"
 
 namespace v8 {
 namespace internal {
@@ -1054,12 +1054,19 @@ void AstPrinter::VisitClassLiteral(ClassLiteral* node) {
   if (node->extends() != nullptr) {
     PrintIndentedVisit("EXTENDS", node->extends());
   }
+  Scope* outer = node->constructor()->scope()->outer_scope();
+  if (outer->is_class_scope()) {
+    Variable* brand = outer->AsClassScope()->brand();
+    if (brand != nullptr) {
+      PrintLiteralWithModeIndented("BRAND", brand, brand->raw_name());
+    }
+  }
   if (node->static_fields_initializer() != nullptr) {
     PrintIndentedVisit("STATIC FIELDS INITIALIZER",
                        node->static_fields_initializer());
   }
   if (node->instance_members_initializer_function() != nullptr) {
-    PrintIndentedVisit("INSTANCE ELEMENTS INITIALIZER",
+    PrintIndentedVisit("INSTANCE MEMBERS INITIALIZER",
                        node->instance_members_initializer_function());
   }
   PrintClassProperties(node->properties());
@@ -1067,7 +1074,7 @@ void AstPrinter::VisitClassLiteral(ClassLiteral* node) {
 
 void AstPrinter::VisitInitializeClassMembersStatement(
     InitializeClassMembersStatement* node) {
-  IndentedScope indent(this, "INITIALIZE CLASS ELEMENTS", node->position());
+  IndentedScope indent(this, "INITIALIZE CLASS MEMBERS", node->position());
   PrintClassProperties(node->fields());
 }
 
@@ -1271,14 +1278,24 @@ void AstPrinter::VisitProperty(Property* node) {
   IndentedScope indent(this, buf.begin(), node->position());
 
   Visit(node->obj());
-  AssignType property_kind = Property::GetAssignType(node);
-  if (property_kind == NAMED_PROPERTY ||
-      property_kind == NAMED_SUPER_PROPERTY) {
-    PrintLiteralIndented("NAME", node->key()->AsLiteral(), false);
-  } else {
-    DCHECK(property_kind == KEYED_PROPERTY ||
-           property_kind == KEYED_SUPER_PROPERTY);
-    PrintIndentedVisit("KEY", node->key());
+  AssignType type = Property::GetAssignType(node);
+  switch (type) {
+    case NAMED_PROPERTY:
+    case NAMED_SUPER_PROPERTY: {
+      PrintLiteralIndented("NAME", node->key()->AsLiteral(), false);
+      break;
+    }
+    case PRIVATE_METHOD: {
+      PrintIndentedVisit("PRIVATE_METHOD", node->key());
+      break;
+    }
+    case KEYED_PROPERTY:
+    case KEYED_SUPER_PROPERTY: {
+      PrintIndentedVisit("KEY", node->key());
+      break;
+    }
+    case NON_PROPERTY:
+      UNREACHABLE();
   }
 }
 

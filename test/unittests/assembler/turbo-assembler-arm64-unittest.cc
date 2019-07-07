@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/arm64/macro-assembler-arm64-inl.h"
-#include "src/macro-assembler.h"
-#include "src/ostreams.h"
-#include "src/simulator.h"
+#include "src/codegen/arm64/macro-assembler-arm64-inl.h"
+#include "src/codegen/macro-assembler.h"
+#include "src/execution/simulator.h"
+#include "src/utils/ostreams.h"
 #include "test/common/assembler-tester.h"
 #include "test/unittests/test-utils.h"
 #include "testing/gtest-support.h"

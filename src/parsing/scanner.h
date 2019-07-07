@@ -9,15 +9,15 @@
 
 #include <algorithm>
 
-#include "src/allocation.h"
 #include "src/base/logging.h"
-#include "src/char-predicates.h"
-#include "src/globals.h"
-#include "src/message-template.h"
+#include "src/common/globals.h"
+#include "src/common/message-template.h"
 #include "src/parsing/literal-buffer.h"
 #include "src/parsing/token.h"
-#include "src/pointer-with-payload.h"
-#include "src/unicode.h"
+#include "src/strings/char-predicates.h"
+#include "src/strings/unicode.h"
+#include "src/utils/allocation.h"
+#include "src/utils/pointer-with-payload.h"
 
 namespace v8 {
 namespace internal {
@@ -392,7 +392,7 @@ class V8_EXPORT_PRIVATE Scanner {
   // Returns true if a pattern is scanned.
   bool ScanRegExpPattern();
   // Scans the input as regular expression flags. Returns the flags on success.
-  Maybe<RegExp::Flags> ScanRegExpFlags();
+  Maybe<int> ScanRegExpFlags();
 
   // Scans the input as a template literal
   Token::Value ScanTemplateContinuation() {

@@ -12,10 +12,10 @@
 #include <set>
 #include <string>
 
+#include "src/execution/isolate.h"
 #include "src/heap/factory.h"
-#include "src/isolate.h"
-#include "src/objects.h"
 #include "src/objects/managed.h"
+#include "src/objects/objects.h"
 #include "unicode/uversion.h"
 
 // Has to be the last include (doesn't have include guards):
@@ -30,12 +30,11 @@ namespace internal {
 
 class JSRelativeTimeFormat : public JSObject {
  public:
-  // Initializes relative time format object with properties derived from input
+  // Creates relative time format object with properties derived from input
   // locales and options.
-  V8_WARN_UNUSED_RESULT static MaybeHandle<JSRelativeTimeFormat> Initialize(
-      Isolate* isolate,
-      Handle<JSRelativeTimeFormat> relative_time_format_holder,
-      Handle<Object> locales, Handle<Object> options);
+  V8_WARN_UNUSED_RESULT static MaybeHandle<JSRelativeTimeFormat> New(
+      Isolate* isolate, Handle<Map> map, Handle<Object> locales,
+      Handle<Object> options);
 
   V8_WARN_UNUSED_RESULT static Handle<JSObject> ResolvedOptions(
       Isolate* isolate, Handle<JSRelativeTimeFormat> format_holder);

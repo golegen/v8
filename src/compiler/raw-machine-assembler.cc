@@ -575,6 +575,10 @@ void RawMachineAssembler::Comment(const std::string& msg) {
   AddNode(machine()->Comment(zone_buffer));
 }
 
+void RawMachineAssembler::StaticAssert(Node* value) {
+  AddNode(common()->StaticAssert(), value);
+}
+
 Node* RawMachineAssembler::CallN(CallDescriptor* call_descriptor,
                                  int input_count, Node* const* inputs) {
   DCHECK(!call_descriptor->NeedsFrameState());
@@ -730,6 +734,8 @@ Node* RawMachineAssembler::MakeNode(const Operator* op, int input_count,
   // so we disable checking input counts here.
   return graph()->NewNodeUnchecked(op, input_count, inputs);
 }
+
+size_t RawMachineAssembler::NodeCount() { return graph_->NodeCount(); }
 
 RawMachineLabel::~RawMachineLabel() {
 #if DEBUG

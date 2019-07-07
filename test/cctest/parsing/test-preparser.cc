@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/api-inl.h"
+#include "src/api/api-inl.h"
 #include "src/ast/ast.h"
-#include "src/compiler.h"
-#include "src/objects-inl.h"
+#include "src/codegen/compiler.h"
+#include "src/objects/objects-inl.h"
 #include "src/parsing/parse-info.h"
 #include "src/parsing/parsing.h"
 #include "src/parsing/preparse-data-impl.h"
@@ -704,7 +704,7 @@ TEST(PreParserScopeAnalysis) {
 
       CHECK(shared->HasUncompiledDataWithPreparseData());
       i::Handle<i::PreparseData> produced_data_on_heap(
-          shared->uncompiled_data_with_preparse_data()->preparse_data(),
+          shared->uncompiled_data_with_preparse_data().preparse_data(),
           isolate);
 
       // Parse the lazy function using the scope data.

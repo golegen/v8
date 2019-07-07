@@ -5,9 +5,9 @@
 #ifndef V8_COMPILER_NODE_PROPERTIES_H_
 #define V8_COMPILER_NODE_PROPERTIES_H_
 
+#include "src/common/globals.h"
 #include "src/compiler/node.h"
 #include "src/compiler/types.h"
-#include "src/globals.h"
 #include "src/objects/map.h"
 #include "src/zone/zone-handle-set.h"
 
@@ -118,7 +118,8 @@ class V8_EXPORT_PRIVATE NodeProperties final {
 
   // Find the last frame state that is effect-wise before the given node. This
   // assumes a linear effect-chain up to a {CheckPoint} node in the graph.
-  static Node* FindFrameStateBefore(Node* node);
+  // Returns {unreachable_sentinel} if {node} is determined to be unreachable.
+  static Node* FindFrameStateBefore(Node* node, Node* unreachable_sentinel);
 
   // Collect the output-value projection for the given output index.
   static Node* FindProjection(Node* node, size_t projection_index);
@@ -150,7 +151,8 @@ class V8_EXPORT_PRIVATE NodeProperties final {
     kReliableReceiverMaps,   // Receiver maps can be trusted.
     kUnreliableReceiverMaps  // Receiver maps might have changed (side-effect).
   };
-  static InferReceiverMapsResult InferReceiverMaps(
+  // DO NOT USE InferReceiverMapsUnsafe IN NEW CODE. Use MapInference instead.
+  static InferReceiverMapsResult InferReceiverMapsUnsafe(
       JSHeapBroker* broker, Node* receiver, Node* effect,
       ZoneHandleSet<Map>* maps_return);
 

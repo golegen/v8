@@ -47,20 +47,19 @@ FEATURE_FLAGS = {
   'numeric-separator-literal': '--harmony-numeric-separator',
   'Intl.DateTimeFormat-datetimestyle': '--harmony-intl-datetime-style',
   'Intl.DateTimeFormat-formatRange': '--harmony-intl-date-format-range',
-  'Intl.Locale': '--harmony-locale',
+  'Intl.NumberFormat-unified': '--harmony-intl-numberformat-unified',
   'Intl.Segmenter': '--harmony-intl-segmenter',
+  'Intl.DateTimeFormat-dayPeriod': '--harmony-intl-dateformat-day-period',
+  'Intl.DateTimeFormat-quarter': '--harmony-intl-dateformat-quarter',
+  'Intl.DateTimeFormat-fractionalSecondDigits': '--harmony-intl-dateformat-fractional-second-digits',
   'Symbol.prototype.description': '--harmony-symbol-description',
-  'globalThis': '--harmony-global',
   'export-star-as-namespace-from-module': '--harmony-namespace-exports',
-  'Object.fromEntries': '--harmony-object-from-entries',
-  'hashbang': '--harmony-hashbang',
   'BigInt': '--harmony-intl-bigint',
   'Promise.allSettled': '--harmony-promise-all-settled',
 }
 
 SKIPPED_FEATURES = set(['class-methods-private',
-                        'class-static-methods-private',
-                        'Intl.NumberFormat-unified'])
+                        'class-static-methods-private'])
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 

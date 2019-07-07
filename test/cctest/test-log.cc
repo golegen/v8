@@ -29,18 +29,18 @@
 
 #include <unordered_set>
 #include <vector>
-#include "src/api-inl.h"
+#include "src/api/api-inl.h"
 #include "src/builtins/builtins.h"
-#include "src/compilation-cache.h"
-#include "src/log-utils.h"
-#include "src/log.h"
-#include "src/objects-inl.h"
-#include "src/ostreams.h"
+#include "src/codegen/compilation-cache.h"
+#include "src/execution/vm-state-inl.h"
+#include "src/init/v8.h"
+#include "src/logging/log-utils.h"
+#include "src/logging/log.h"
+#include "src/objects/objects-inl.h"
 #include "src/profiler/cpu-profiler.h"
 #include "src/snapshot/natives.h"
-#include "src/v8.h"
-#include "src/version.h"
-#include "src/vm-state-inl.h"
+#include "src/utils/ostreams.h"
+#include "src/utils/version.h"
 #include "test/cctest/cctest.h"
 
 using v8::internal::Address;
@@ -181,9 +181,8 @@ class ScopedLoggerInitializer {
             printf("%s\n", log_.at(i).c_str());
           }
           printf("%zu\n", current);
-          V8_Fatal(__FILE__, __LINE__, "%s, ... %p apperead twice:\n    %s",
-                   search_term.c_str(), reinterpret_cast<void*>(address),
-                   current_line.c_str());
+          FATAL("%s, ... %p apperead twice:\n    %s", search_term.c_str(),
+                reinterpret_cast<void*>(address), current_line.c_str());
         }
       }
       map.insert({address, current_line});
@@ -430,75 +429,6 @@ UNINITIALIZED_TEST(LogAccessorCallbacks) {
                 Prop2Getter_entry);
     CHECK(logger.ContainsLine({"code-creation,Callback,-2,",
                                std::string(prop2_getter_record.begin())}));
-  }
-  isolate->Dispose();
-}
-
-// Test that logging of code create / move events is equivalent to traversal of
-// a resulting heap.
-UNINITIALIZED_TEST(EquivalenceOfLoggingAndTraversal) {
-  // This test needs to be run on a "clean" V8 to ensure that snapshot log
-  // is loaded. This is always true when running using tools/test.py because
-  // it launches a new cctest instance for every test. To be sure that launching
-  // cctest manually also works, please be sure that no tests below
-  // are using V8.
-
-  // Start with profiling to capture all code events from the beginning.
-  SETUP_FLAGS();
-  v8::Isolate::CreateParams create_params;
-  create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
-  v8::Isolate* isolate = v8::Isolate::New(create_params);
-  {
-    ScopedLoggerInitializer logger(saved_log, saved_prof, isolate);
-
-    // Compile and run a function that creates other functions.
-    CompileRun(
-        "(function f(obj) {\n"
-        "  obj.test =\n"
-        "    (function a(j) { return function b() { return j; } })(100);\n"
-        "})(this);");
-    logger.logger()->StopProfilerThread();
-    CcTest::PreciseCollectAllGarbage();
-    logger.StringEvent("test-logging-done", "");
-
-    // Iterate heap to find compiled functions, will write to log.
-    logger.LogCompiledFunctions();
-    logger.StringEvent("test-traversal-done", "");
-
-    logger.StopLogging();
-
-    v8::Local<v8::String> log_str = logger.GetLogString();
-    logger.env()
-        ->Global()
-        ->Set(logger.env(), v8_str("_log"), log_str)
-        .FromJust();
-
-    // Load the Test snapshot's sources, see log-eq-of-logging-and-traversal.js
-    i::Vector<const char> source =
-        i::NativesCollection<i::TEST>::GetScriptsSource();
-    v8::Local<v8::String> source_str =
-        v8::String::NewFromUtf8(isolate, source.begin(),
-                                v8::NewStringType::kNormal, source.length())
-            .ToLocalChecked();
-    v8::TryCatch try_catch(isolate);
-    v8::Local<v8::Script> script = CompileWithOrigin(source_str, "", false);
-    if (script.IsEmpty()) {
-      v8::String::Utf8Value exception(isolate, try_catch.Exception());
-      FATAL("compile: %s\n", *exception);
-    }
-    v8::Local<v8::Value> result;
-    if (!script->Run(logger.env()).ToLocal(&result)) {
-      v8::String::Utf8Value exception(isolate, try_catch.Exception());
-      FATAL("run: %s\n", *exception);
-    }
-    // The result either be the "true" literal or problem description.
-    if (!result->IsTrue()) {
-      v8::Local<v8::String> s = result->ToString(logger.env()).ToLocalChecked();
-      i::ScopedVector<char> data(s->Utf8Length(isolate) + 1);
-      CHECK(data.begin());
-      s->WriteUtf8(isolate, data.begin());
-      FATAL("%s\n", data.begin());
-    }
   }
   isolate->Dispose();
 }
@@ -930,33 +860,33 @@ void ValidateMapDetailsLogging(v8::Isolate* isolate,
 
   // Iterate over all maps on the heap.
   i::Heap* heap = reinterpret_cast<i::Isolate*>(isolate)->heap();
-  i::HeapIterator iterator(heap);
+  i::HeapObjectIterator iterator(heap);
   i::DisallowHeapAllocation no_gc;
   size_t i = 0;
-  for (i::HeapObject obj = iterator.next(); !obj.is_null();
-       obj = iterator.next()) {
-    if (!obj->IsMap()) continue;
+  for (i::HeapObject obj = iterator.Next(); !obj.is_null();
+       obj = iterator.Next()) {
+    if (!obj.IsMap()) continue;
     i++;
-    uintptr_t address = obj->ptr();
+    uintptr_t address = obj.ptr();
     if (map_create_addresses.find(address) == map_create_addresses.end()) {
       // logger->PrintLog();
-      i::Map::cast(obj)->Print();
-      V8_Fatal(__FILE__, __LINE__,
-               "Map (%p, #%zu) creation not logged during startup with "
-               "--trace-maps!"
-               "\n# Expected Log Line: map-create, ... %p",
-               reinterpret_cast<void*>(obj->ptr()), i,
-               reinterpret_cast<void*>(obj->ptr()));
+      i::Map::cast(obj).Print();
+      FATAL(
+          "Map (%p, #%zu) creation not logged during startup with "
+          "--trace-maps!"
+          "\n# Expected Log Line: map-create, ... %p",
+          reinterpret_cast<void*>(obj.ptr()), i,
+          reinterpret_cast<void*>(obj.ptr()));
     } else if (map_details_addresses.find(address) ==
                map_details_addresses.end()) {
       // logger->PrintLog();
-      i::Map::cast(obj)->Print();
-      V8_Fatal(__FILE__, __LINE__,
-               "Map (%p, #%zu) details not logged during startup with "
-               "--trace-maps!"
-               "\n# Expected Log Line: map-details, ... %p",
-               reinterpret_cast<void*>(obj->ptr()), i,
-               reinterpret_cast<void*>(obj->ptr()));
+      i::Map::cast(obj).Print();
+      FATAL(
+          "Map (%p, #%zu) details not logged during startup with "
+          "--trace-maps!"
+          "\n# Expected Log Line: map-details, ... %p",
+          reinterpret_cast<void*>(obj.ptr()), i,
+          reinterpret_cast<void*>(obj.ptr()));
     }
   }
 }

@@ -8,8 +8,8 @@
 
 #include "src/ast/scopes.h"
 #include "src/ast/variables.h"
-#include "src/handles.h"
-#include "src/objects-inl.h"
+#include "src/handles/handles.h"
+#include "src/objects/objects-inl.h"
 #include "src/objects/shared-function-info.h"
 #include "src/parsing/parser.h"
 #include "src/parsing/preparse-data-impl.h"
@@ -645,7 +645,7 @@ void BaseConsumedPreparseData<Data>::RestoreDataForVariable(Variable* var) {
 #endif
   uint8_t variable_data = scope_data_->ReadQuarter();
   if (VariableMaybeAssignedField::decode(variable_data)) {
-    var->set_maybe_assigned();
+    var->SetMaybeAssigned();
   }
   if (VariableContextAllocatedField::decode(variable_data)) {
     var->set_is_used();

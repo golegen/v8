@@ -6,14 +6,14 @@
 
 #include "src/builtins/builtins-utils-gen.h"
 #include "src/builtins/builtins.h"
-#include "src/code-stub-assembler.h"
+#include "src/codegen/code-stub-assembler.h"
 #include "src/heap/factory-inl.h"
 #include "src/ic/accessor-assembler.h"
 #include "src/ic/keyed-store-generic.h"
 #include "src/objects/js-generator.h"
 #include "src/objects/property-descriptor-object.h"
+#include "src/objects/property-details.h"
 #include "src/objects/shared-function-info.h"
-#include "src/property-details.h"
 
 namespace v8 {
 namespace internal {
@@ -21,7 +21,7 @@ namespace internal {
 // -----------------------------------------------------------------------------
 // ES6 section 19.1 Object Objects
 
-typedef compiler::Node Node;
+using Node = compiler::Node;
 template <class T>
 using TNode = CodeStubAssembler::TNode<T>;
 
@@ -64,8 +64,6 @@ class ObjectEntriesValuesBuiltinsAssembler : public ObjectBuiltinsAssembler {
   TNode<BoolT> IsPropertyKindAccessor(TNode<Uint32T> kind);
 
   TNode<BoolT> IsPropertyKindData(TNode<Uint32T> kind);
-
-  TNode<Uint32T> HasHiddenPrototype(TNode<Map> map);
 
   TNode<Uint32T> LoadPropertyKind(TNode<Uint32T> details) {
     return DecodeWord32<PropertyDetails::KindField>(details);
@@ -185,12 +183,6 @@ TNode<BoolT> ObjectEntriesValuesBuiltinsAssembler::IsPropertyKindData(
   return Word32Equal(kind, Int32Constant(PropertyKind::kData));
 }
 
-TNode<Uint32T> ObjectEntriesValuesBuiltinsAssembler::HasHiddenPrototype(
-    TNode<Map> map) {
-  TNode<Uint32T> bit_field3 = LoadMapBitField3(map);
-  return DecodeWord32<Map::HasHiddenPrototypeBit>(bit_field3);
-}
-
 void ObjectEntriesValuesBuiltinsAssembler::GetOwnValuesOrEntries(
     TNode<Context> context, TNode<Object> maybe_object,
     CollectType collect_type) {
@@ -254,7 +246,6 @@ void ObjectEntriesValuesBuiltinsAssembler::GotoIfMapHasSlowProperties(
     TNode<Map> map, Label* if_slow) {
   GotoIf(IsStringWrapperElementsKind(map), if_slow);
   GotoIf(IsSpecialReceiverMap(map), if_slow);
-  GotoIf(HasHiddenPrototype(map), if_slow);
   GotoIf(IsDictionaryMap(map), if_slow);
 }
 
@@ -728,11 +719,11 @@ TF_BUILTIN(ObjectPrototypeIsPrototypeOf, ObjectBuiltinsAssembler) {
   // invoke the ToObject builtin, which raises the appropriate error.
   // Otherwise we don't need to invoke ToObject, since {receiver} is
   // either already a JSReceiver, in which case ToObject is a no-op,
-  // or it's a Primitive and ToObject would allocate a fresh JSValue
+  // or it's a Primitive and ToObject would allocate a fresh JSPrimitiveWrapper
   // wrapper, which wouldn't be identical to any existing JSReceiver
   // found in the prototype chain of {value}, hence it will return
   // false no matter if we search for the Primitive {receiver} or
-  // a newly allocated JSValue wrapper for {receiver}.
+  // a newly allocated JSPrimitiveWrapper wrapper for {receiver}.
   GotoIf(IsNull(receiver), &if_receiverisnullorundefined);
   GotoIf(IsUndefined(receiver), &if_receiverisnullorundefined);
 
@@ -794,7 +785,7 @@ TF_BUILTIN(ObjectToString, ObjectBuiltinsAssembler) {
                     {JS_SPECIAL_API_OBJECT_TYPE, &if_apiobject},
                     {JS_PROXY_TYPE, &if_proxy},
                     {JS_ERROR_TYPE, &if_error},
-                    {JS_VALUE_TYPE, &if_value}};
+                    {JS_PRIMITIVE_WRAPPER_TYPE, &if_value}};
   size_t const kNumCases = arraysize(kJumpTable);
   Label* case_labels[kNumCases];
   int32_t case_values[kNumCases];
@@ -996,7 +987,7 @@ TF_BUILTIN(ObjectToString, ObjectBuiltinsAssembler) {
         if_value_is_bigint(this, Label::kDeferred),
         if_value_is_string(this, Label::kDeferred);
 
-    Node* receiver_value = LoadJSValueValue(receiver);
+    Node* receiver_value = LoadJSPrimitiveWrapperValue(receiver);
     // We need to start with the object to see if the value was a subclass
     // which might have interesting properties.
     var_holder.Bind(receiver);
@@ -1346,10 +1337,15 @@ TF_BUILTIN(CreateGeneratorObject, ObjectBuiltinsAssembler) {
   StoreObjectFieldNoWriteBarrier(
       result, JSGeneratorObject::kParametersAndRegistersOffset,
       parameters_and_registers);
+  Node* resume_mode = SmiConstant(JSGeneratorObject::ResumeMode::kNext);
+  StoreObjectFieldNoWriteBarrier(result, JSGeneratorObject::kResumeModeOffset,
+                                 resume_mode);
   Node* executing = SmiConstant(JSGeneratorObject::kGeneratorExecuting);
   StoreObjectFieldNoWriteBarrier(result, JSGeneratorObject::kContinuationOffset,
                                  executing);
-  GotoIfNot(HasInstanceType(maybe_map, JS_ASYNC_GENERATOR_OBJECT_TYPE), &done);
+  GotoIfNot(InstanceTypeEqual(LoadMapInstanceType(maybe_map),
+                              JS_ASYNC_GENERATOR_OBJECT_TYPE),
+            &done);
   StoreObjectFieldNoWriteBarrier(
       result, JSAsyncGeneratorObject::kIsAwaitingOffset, SmiConstant(0));
   Goto(&done);

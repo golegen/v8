@@ -7,16 +7,16 @@
 #include "test/cctest/test-api.h"
 
 #include "include/v8-util.h"
-#include "src/api-inl.h"
-#include "src/arguments.h"
+#include "src/api/api-inl.h"
 #include "src/base/platform/platform.h"
-#include "src/compilation-cache.h"
-#include "src/execution.h"
-#include "src/objects-inl.h"
-#include "src/objects.h"
+#include "src/codegen/compilation-cache.h"
+#include "src/execution/arguments.h"
+#include "src/execution/execution.h"
+#include "src/objects/objects-inl.h"
+#include "src/objects/objects.h"
 #include "src/runtime/runtime.h"
-#include "src/unicode-inl.h"
-#include "src/utils.h"
+#include "src/strings/unicode-inl.h"
+#include "src/utils/utils.h"
 
 using ::v8::Boolean;
 using ::v8::BooleanObject;
@@ -1339,9 +1339,9 @@ THREADED_TEST(InterceptorLoadGlobalICGlobalWithInterceptor) {
       v8::Utils::OpenHandle<Object, i::JSReceiver>(context->Global());
   CHECK(global_proxy->IsJSGlobalProxy());
   i::Handle<i::JSGlobalObject> global(
-      i::JSGlobalObject::cast(global_proxy->map()->prototype()),
+      i::JSGlobalObject::cast(global_proxy->map().prototype()),
       global_proxy->GetIsolate());
-  CHECK(global->map()->has_named_interceptor());
+  CHECK(global->map().has_named_interceptor());
 
   v8::Local<Value> value = CompileRun(
       "var f = function() { "
@@ -1403,9 +1403,9 @@ THREADED_TEST(InterceptorLoadICGlobalWithInterceptor) {
       v8::Utils::OpenHandle<Object, i::JSReceiver>(context->Global());
   CHECK(global_proxy->IsJSGlobalProxy());
   i::Handle<i::JSGlobalObject> global(
-      i::JSGlobalObject::cast(global_proxy->map()->prototype()),
+      i::JSGlobalObject::cast(global_proxy->map().prototype()),
       global_proxy->GetIsolate());
-  CHECK(global->map()->has_named_interceptor());
+  CHECK(global->map().has_named_interceptor());
 
   ExpectInt32(
       "(function() {"

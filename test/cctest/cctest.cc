@@ -29,11 +29,11 @@
 #include "test/cctest/cctest.h"
 
 #include "include/libplatform/libplatform.h"
-#include "src/compiler.h"
+#include "src/codegen/compiler.h"
+#include "src/codegen/optimized-compilation-info.h"
 #include "src/compiler/pipeline.h"
 #include "src/debug/debug.h"
-#include "src/objects-inl.h"
-#include "src/optimized-compilation-info.h"
+#include "src/objects/objects-inl.h"
 #include "src/trap-handler/trap-handler.h"
 #include "test/cctest/print-extension.h"
 #include "test/cctest/profiler-extension.h"
@@ -121,7 +121,9 @@ void CcTest::Run() {
 }
 
 i::Heap* CcTest::heap() { return i_isolate()->heap(); }
-i::ReadOnlyHeap* CcTest::read_only_heap() { return heap()->read_only_heap(); }
+i::ReadOnlyHeap* CcTest::read_only_heap() {
+  return i_isolate()->read_only_heap();
+}
 
 void CcTest::CollectGarbage(i::AllocationSpace space) {
   heap()->CollectGarbage(space, i::GarbageCollectionReason::kTesting);
@@ -249,7 +251,7 @@ i::Handle<i::JSFunction> Optimize(
   i::Handle<i::Code> code =
       i::compiler::Pipeline::GenerateCodeForTesting(&info, isolate, out_broker)
           .ToHandleChecked();
-  info.native_context()->AddOptimizedCode(*code);
+  info.native_context().AddOptimizedCode(*code);
   function->set_code(*code);
 
   return function;

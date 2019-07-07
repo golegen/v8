@@ -7,14 +7,14 @@
 #include <limits>
 #include <memory>
 
-#include "src/assembler.h"
 #include "src/base/bits.h"
-#include "src/compiler.h"
+#include "src/codegen/assembler.h"
+#include "src/codegen/compiler.h"
+#include "src/codegen/machine-type.h"
+#include "src/codegen/macro-assembler.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/wasm-compiler.h"
-#include "src/machine-type.h"
-#include "src/macro-assembler.h"
-#include "src/objects-inl.h"
+#include "src/objects/objects-inl.h"
 #include "src/wasm/function-compiler.h"
 #include "src/wasm/wasm-engine.h"
 #include "src/wasm/wasm-objects-inl.h"
@@ -151,7 +151,7 @@ void TestReturnMultipleValues(MachineType type) {
       // m.Parameter(0) is the WasmContext.
       Node* p0 = m.Parameter(1);
       Node* p1 = m.Parameter(2);
-      typedef Node* Node_ptr;
+      using Node_ptr = Node*;
       std::unique_ptr<Node_ptr[]> returns(new Node_ptr[count]);
       for (int i = 0; i < count; ++i) {
         if (i % 3 == 0) returns[i] = Add(m, type, p0, p1);

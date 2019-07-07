@@ -4,12 +4,12 @@
 
 #include <fstream>
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
 #include "src/interpreter/bytecode-array-iterator.h"
 #include "src/interpreter/bytecode-generator.h"
 #include "src/interpreter/interpreter.h"
-#include "src/objects-inl.h"
+#include "src/objects/objects-inl.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/interpreter/bytecode-expectations-printer.h"
 #include "test/cctest/test-feedback-vector.h"
@@ -2755,6 +2755,41 @@ TEST(PrivateClassFields) {
 
   CHECK(CompareTexts(BuildActual(printer, snippets),
                      LoadGolden("PrivateClassFields.golden")));
+}
+
+TEST(PrivateMethods) {
+  bool old_methods_flag = i::FLAG_harmony_private_methods;
+  i::FLAG_harmony_private_methods = true;
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+
+  const char* snippets[] = {
+      R"({
+  class A {
+    #a() { return 1; }
+    callA() { return this.#a(); }
+  }
+
+  const a = new A;
+  a.callA();
+})",
+      R"({
+  class D {
+    #d() { return 1; }
+    callD() { return this.#d(); }
+  }
+
+  class E extends D {
+    #e() { return 2; }
+    callE() { return this.callD() + this.#e(); }
+  }
+
+  const e = new E;
+  e.callE();
+})"};
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("PrivateMethods.golden")));
+  i::FLAG_harmony_private_methods = old_methods_flag;
 }
 
 TEST(StaticClassFields) {

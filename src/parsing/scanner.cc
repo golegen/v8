@@ -11,7 +11,7 @@
 #include <cmath>
 
 #include "src/ast/ast-value-factory.h"
-#include "src/conversions-inl.h"
+#include "src/numbers/conversions-inl.h"
 #include "src/objects/bigint.h"
 #include "src/parsing/scanner-inl.h"
 #include "src/zone/zone.h"
@@ -1004,45 +1004,21 @@ bool Scanner::ScanRegExpPattern() {
   return true;
 }
 
-
-Maybe<RegExp::Flags> Scanner::ScanRegExpFlags() {
+Maybe<int> Scanner::ScanRegExpFlags() {
   DCHECK_EQ(Token::REGEXP_LITERAL, next().token);
 
   // Scan regular expression flags.
-  int flags = 0;
+  JSRegExp::Flags flags;
   while (IsIdentifierPart(c0_)) {
-    RegExp::Flags flag = RegExp::kNone;
-    switch (c0_) {
-      case 'g':
-        flag = RegExp::kGlobal;
-        break;
-      case 'i':
-        flag = RegExp::kIgnoreCase;
-        break;
-      case 'm':
-        flag = RegExp::kMultiline;
-        break;
-      case 's':
-        flag = RegExp::kDotAll;
-        break;
-      case 'u':
-        flag = RegExp::kUnicode;
-        break;
-      case 'y':
-        flag = RegExp::kSticky;
-        break;
-      default:
-        return Nothing<RegExp::Flags>();
-    }
-    if (flags & flag) {
-      return Nothing<RegExp::Flags>();
-    }
+    JSRegExp::Flags flag = JSRegExp::FlagFromChar(c0_);
+    if (flag == JSRegExp::kInvalid) return Nothing<int>();
+    if (flags & flag) return Nothing<int>();
     Advance();
     flags |= flag;
   }
 
   next().location.end_pos = source_pos();
-  return Just(RegExp::Flags(flags));
+  return Just<int>(flags);
 }
 
 const AstRawString* Scanner::CurrentSymbol(

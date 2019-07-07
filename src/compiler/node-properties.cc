@@ -5,14 +5,16 @@
 #include "src/compiler/node-properties.h"
 #include "src/compiler/common-operator.h"
 #include "src/compiler/graph.h"
+#include "src/compiler/js-heap-broker.h"
 #include "src/compiler/js-operator.h"
 #include "src/compiler/linkage.h"
+#include "src/compiler/map-inference.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/operator-properties.h"
 #include "src/compiler/simplified-operator.h"
 #include "src/compiler/verifier.h"
-#include "src/handles-inl.h"
-#include "src/objects-inl.h"
+#include "src/handles/handles-inl.h"
+#include "src/objects/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -254,10 +256,15 @@ void NodeProperties::ChangeOp(Node* node, const Operator* new_op) {
 
 
 // static
-Node* NodeProperties::FindFrameStateBefore(Node* node) {
+Node* NodeProperties::FindFrameStateBefore(Node* node,
+                                           Node* unreachable_sentinel) {
   Node* effect = NodeProperties::GetEffectInput(node);
   while (effect->opcode() != IrOpcode::kCheckpoint) {
-    if (effect->opcode() == IrOpcode::kDead) return effect;
+    if (effect->opcode() == IrOpcode::kDead ||
+        effect->opcode() == IrOpcode::kUnreachable) {
+      return unreachable_sentinel;
+    }
+    DCHECK(effect->op()->HasProperty(Operator::kNoWrite));
     DCHECK_EQ(1, effect->op()->EffectInputCount());
     effect = NodeProperties::GetEffectInput(effect);
   }
@@ -386,7 +393,7 @@ base::Optional<MapRef> NodeProperties::GetJSCreateMap(JSHeapBroker* broker,
 }
 
 // static
-NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMaps(
+NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMapsUnsafe(
     JSHeapBroker* broker, Node* receiver, Node* effect,
     ZoneHandleSet<Map>* maps_return) {
   HeapObjectMatcher m(receiver);
@@ -555,20 +562,9 @@ bool NodeProperties::CanBePrimitive(JSHeapBroker* broker, Node* receiver,
       return value.map().IsPrimitiveMap();
     }
     default: {
-      // We don't really care about the exact maps here,
-      // just the instance types, which don't change
-      // across potential side-effecting operations.
-      ZoneHandleSet<Map> maps;
-      if (InferReceiverMaps(broker, receiver, effect, &maps) !=
-          kNoReceiverMaps) {
-        // Check if one of the {maps} is not a JSReceiver map.
-        for (size_t i = 0; i < maps.size(); ++i) {
-          MapRef map(broker, maps[i]);
-          if (!map.IsJSReceiverMap()) return true;
-        }
-        return false;
-      }
-      return true;
+      MapInference inference(broker, receiver, effect);
+      return !inference.HaveMaps() ||
+             !inference.AllOfInstanceTypesAreJSReceiver();
     }
   }
 }

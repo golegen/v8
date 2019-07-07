@@ -5,17 +5,17 @@
 #include <functional>
 #include <memory>
 
-#include "src/api-inl.h"
-#include "src/assembler-inl.h"
+#include "src/api/api-inl.h"
+#include "src/codegen/assembler-inl.h"
 #include "src/compiler/wasm-compiler.h"
 #include "src/debug/interface-types.h"
-#include "src/frames-inl.h"
-#include "src/objects.h"
+#include "src/execution/frames-inl.h"
+#include "src/execution/simulator.h"
+#include "src/init/v8.h"
 #include "src/objects/js-array-inl.h"
-#include "src/property-descriptor.h"
-#include "src/simulator.h"
+#include "src/objects/objects.h"
+#include "src/objects/property-descriptor.h"
 #include "src/snapshot/snapshot.h"
-#include "src/v8.h"
 #include "src/wasm/module-decoder.h"
 #include "src/wasm/wasm-code-manager.h"
 #include "src/wasm/wasm-js.h"
@@ -40,6 +40,22 @@ WireBytesRef WasmModule::LookupFunctionName(const ModuleWireBytes& wire_bytes,
   auto it = function_names->find(function_index);
   if (it == function_names->end()) return WireBytesRef();
   return it->second;
+}
+
+// static
+int MaxNumExportWrappers(const WasmModule* module) {
+  // For each signature there may exist a wrapper, both for imported and
+  // internal functions.
+  return static_cast<int>(module->signature_map.size()) * 2;
+}
+
+// static
+int GetExportWrapperIndex(const WasmModule* module, const FunctionSig* sig,
+                          bool is_import) {
+  int result = module->signature_map.Find(*sig);
+  CHECK_GE(result, 0);
+  result += is_import ? module->signature_map.size() : 0;
+  return result;
 }
 
 void WasmModule::AddFunctionNameForTesting(int function_index,

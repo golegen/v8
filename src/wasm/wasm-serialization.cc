@@ -4,16 +4,16 @@
 
 #include "src/wasm/wasm-serialization.h"
 
-#include "src/assembler-inl.h"
-#include "src/external-reference-table.h"
-#include "src/objects-inl.h"
-#include "src/objects.h"
-#include "src/ostreams.h"
+#include "src/codegen/assembler-inl.h"
+#include "src/codegen/external-reference-table.h"
+#include "src/objects/objects-inl.h"
+#include "src/objects/objects.h"
 #include "src/runtime/runtime.h"
 #include "src/snapshot/code-serializer.h"
 #include "src/snapshot/serializer-common.h"
-#include "src/utils.h"
-#include "src/version.h"
+#include "src/utils/ostreams.h"
+#include "src/utils/utils.h"
+#include "src/utils/version.h"
 #include "src/wasm/function-compiler.h"
 #include "src/wasm/module-compiler.h"
 #include "src/wasm/module-decoder.h"
@@ -645,6 +645,8 @@ MaybeHandle<WasmModuleObject> DeserializeNativeModule(
   // Log the code within the generated module for profiling.
   native_module->LogWasmCodes(isolate);
 
+  // Finish the Wasm script now and make it public to the debugger.
+  isolate->debug()->OnAfterCompile(script);
   return module_object;
 }
 

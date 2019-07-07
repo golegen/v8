@@ -5,15 +5,15 @@
 #include <stdlib.h>
 #include <utility>
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
-#include "src/compilation-cache.h"
-#include "src/execution.h"
-#include "src/field-type.h"
-#include "src/global-handles.h"
+#include "src/codegen/compilation-cache.h"
+#include "src/execution/execution.h"
+#include "src/handles/global-handles.h"
 #include "src/heap/factory.h"
-#include "src/objects-inl.h"
-#include "src/transitions-inl.h"
+#include "src/objects/field-type.h"
+#include "src/objects/objects-inl.h"
+#include "src/objects/transitions-inl.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/test-transitions.h"
 
@@ -289,7 +289,7 @@ TEST(TransitionArray_SameFieldNamesDifferentAttributes) {
     if (key == *name) {
       // Attributes transition.
       PropertyAttributes attributes =
-          target->GetLastDescriptorDetails().attributes();
+          target.GetLastDescriptorDetails(isolate).attributes();
       CHECK_EQ(*attr_maps[static_cast<int>(attributes)], target);
     } else {
       for (int j = 0; j < PROPS_COUNT; j++) {
