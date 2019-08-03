@@ -565,6 +565,7 @@ class FeedbackMetadata : public HeapObject {
 
 // Verify that an empty hash field looks like a tagged object, but can't
 // possibly be confused with a pointer.
+// NOLINTNEXTLINE(runtime/references) (false positive)
 STATIC_ASSERT((Name::kEmptyHashField & kHeapObjectTag) == kHeapObjectTag);
 STATIC_ASSERT(Name::kEmptyHashField == 0x3);
 // Verify that a set hash field will not look like a tagged object.
@@ -673,7 +674,6 @@ class V8_EXPORT_PRIVATE FeedbackNexus final {
 
   inline Isolate* GetIsolate() const;
 
-  bool SetBinaryOpFeedbackToAny();
   void ConfigureMonomorphic(Handle<Name> name, Handle<Map> receiver_map,
                             const MaybeObjectHandle& handler);
 

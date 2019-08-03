@@ -6,6 +6,10 @@
 
 #include <sstream>
 
+#include "src/base/optional.h"
+#include "src/compiler/access-info.h"
+#include "src/compiler/bytecode-analysis.h"
+#include "src/compiler/compilation-dependencies.h"
 #include "src/compiler/js-heap-broker.h"
 #include "src/compiler/vector-slot-pair.h"
 #include "src/handles/handles-inl.h"
@@ -13,12 +17,475 @@
 #include "src/interpreter/bytecode-array-iterator.h"
 #include "src/objects/code.h"
 #include "src/objects/js-array-inl.h"
+#include "src/objects/js-regexp-inl.h"
 #include "src/objects/shared-function-info-inl.h"
+#include "src/zone/zone-containers.h"
 #include "src/zone/zone.h"
 
 namespace v8 {
 namespace internal {
 namespace compiler {
+
+#define CLEAR_ENVIRONMENT_LIST(V) \
+  V(CallRuntimeForPair)           \
+  V(Debugger)                     \
+  V(ResumeGenerator)              \
+  V(SuspendGenerator)
+
+#define KILL_ENVIRONMENT_LIST(V) \
+  V(Abort)                       \
+  V(ReThrow)                     \
+  V(Throw)
+
+#define CLEAR_ACCUMULATOR_LIST(V) \
+  V(CallRuntime)                  \
+  V(CloneObject)                  \
+  V(CreateArrayFromIterable)      \
+  V(CreateArrayLiteral)           \
+  V(CreateEmptyArrayLiteral)      \
+  V(CreateEmptyObjectLiteral)     \
+  V(CreateMappedArguments)        \
+  V(CreateObjectLiteral)          \
+  V(CreateRegExpLiteral)          \
+  V(CreateRestParameter)          \
+  V(CreateUnmappedArguments)      \
+  V(DeletePropertySloppy)         \
+  V(DeletePropertyStrict)         \
+  V(ForInContinue)                \
+  V(ForInEnumerate)               \
+  V(ForInStep)                    \
+  V(LdaLookupSlot)                \
+  V(LdaLookupSlotInsideTypeof)    \
+  V(LogicalNot)                   \
+  V(SetPendingMessage)            \
+  V(StaLookupSlot)                \
+  V(TestNull)                     \
+  V(TestReferenceEqual)           \
+  V(TestTypeOf)                   \
+  V(TestUndefined)                \
+  V(TestUndetectable)             \
+  V(ToBooleanLogicalNot)          \
+  V(ToName)                       \
+  V(ToString)                     \
+  V(TypeOf)
+
+#define UNCONDITIONAL_JUMPS_LIST(V) \
+  V(Jump)                           \
+  V(JumpConstant)                   \
+  V(JumpLoop)
+
+#define CONDITIONAL_JUMPS_LIST(V) \
+  V(JumpIfFalse)                  \
+  V(JumpIfFalseConstant)          \
+  V(JumpIfJSReceiver)             \
+  V(JumpIfJSReceiverConstant)     \
+  V(JumpIfNotNull)                \
+  V(JumpIfNotNullConstant)        \
+  V(JumpIfNotUndefined)           \
+  V(JumpIfNotUndefinedConstant)   \
+  V(JumpIfNull)                   \
+  V(JumpIfNullConstant)           \
+  V(JumpIfToBooleanFalse)         \
+  V(JumpIfToBooleanFalseConstant) \
+  V(JumpIfToBooleanTrue)          \
+  V(JumpIfToBooleanTrueConstant)  \
+  V(JumpIfTrue)                   \
+  V(JumpIfTrueConstant)           \
+  V(JumpIfUndefined)              \
+  V(JumpIfUndefinedConstant)
+
+#define IGNORED_BYTECODE_LIST(V)      \
+  V(CallNoFeedback)                   \
+  V(IncBlockCounter)                  \
+  V(LdaNamedPropertyNoFeedback)       \
+  V(StackCheck)                       \
+  V(StaNamedPropertyNoFeedback)       \
+  V(ThrowReferenceErrorIfHole)        \
+  V(ThrowSuperAlreadyCalledIfNotHole) \
+  V(ThrowSuperNotCalledIfHole)
+
+#define UNREACHABLE_BYTECODE_LIST(V) \
+  V(ExtraWide)                       \
+  V(Illegal)                         \
+  V(Wide)
+
+#define BINARY_OP_LIST(V) \
+  V(Add)                  \
+  V(AddSmi)               \
+  V(BitwiseAnd)           \
+  V(BitwiseAndSmi)        \
+  V(BitwiseOr)            \
+  V(BitwiseOrSmi)         \
+  V(BitwiseXor)           \
+  V(BitwiseXorSmi)        \
+  V(Div)                  \
+  V(DivSmi)               \
+  V(Exp)                  \
+  V(ExpSmi)               \
+  V(Mod)                  \
+  V(ModSmi)               \
+  V(Mul)                  \
+  V(MulSmi)               \
+  V(ShiftLeft)            \
+  V(ShiftLeftSmi)         \
+  V(ShiftRight)           \
+  V(ShiftRightSmi)        \
+  V(ShiftRightLogical)    \
+  V(ShiftRightLogicalSmi) \
+  V(Sub)                  \
+  V(SubSmi)
+
+#define UNARY_OP_LIST(V) \
+  V(BitwiseNot)          \
+  V(Dec)                 \
+  V(Inc)                 \
+  V(Negate)
+
+#define COMPARE_OP_LIST(V)  \
+  V(TestEqual)              \
+  V(TestEqualStrict)        \
+  V(TestGreaterThan)        \
+  V(TestGreaterThanOrEqual) \
+  V(TestLessThan)           \
+  V(TestLessThanOrEqual)
+
+#define SUPPORTED_BYTECODE_LIST(V)    \
+  V(CallAnyReceiver)                  \
+  V(CallJSRuntime)                    \
+  V(CallProperty)                     \
+  V(CallProperty0)                    \
+  V(CallProperty1)                    \
+  V(CallProperty2)                    \
+  V(CallUndefinedReceiver)            \
+  V(CallUndefinedReceiver0)           \
+  V(CallUndefinedReceiver1)           \
+  V(CallUndefinedReceiver2)           \
+  V(CallWithSpread)                   \
+  V(Construct)                        \
+  V(ConstructWithSpread)              \
+  V(CreateBlockContext)               \
+  V(CreateCatchContext)               \
+  V(CreateClosure)                    \
+  V(CreateEvalContext)                \
+  V(CreateFunctionContext)            \
+  V(CreateWithContext)                \
+  V(ForInNext)                        \
+  V(ForInPrepare)                     \
+  V(GetSuperConstructor)              \
+  V(GetTemplateObject)                \
+  V(InvokeIntrinsic)                  \
+  V(LdaConstant)                      \
+  V(LdaContextSlot)                   \
+  V(LdaCurrentContextSlot)            \
+  V(LdaImmutableContextSlot)          \
+  V(LdaImmutableCurrentContextSlot)   \
+  V(LdaModuleVariable)                \
+  V(LdaFalse)                         \
+  V(LdaGlobal)                        \
+  V(LdaGlobalInsideTypeof)            \
+  V(LdaKeyedProperty)                 \
+  V(LdaLookupContextSlot)             \
+  V(LdaLookupContextSlotInsideTypeof) \
+  V(LdaLookupGlobalSlot)              \
+  V(LdaLookupGlobalSlotInsideTypeof)  \
+  V(LdaNamedProperty)                 \
+  V(LdaNull)                          \
+  V(Ldar)                             \
+  V(LdaSmi)                           \
+  V(LdaTheHole)                       \
+  V(LdaTrue)                          \
+  V(LdaUndefined)                     \
+  V(LdaZero)                          \
+  V(Mov)                              \
+  V(PopContext)                       \
+  V(PushContext)                      \
+  V(Return)                           \
+  V(StaContextSlot)                   \
+  V(StaCurrentContextSlot)            \
+  V(StaGlobal)                        \
+  V(StaInArrayLiteral)                \
+  V(StaKeyedProperty)                 \
+  V(StaModuleVariable)                \
+  V(StaNamedOwnProperty)              \
+  V(StaNamedProperty)                 \
+  V(Star)                             \
+  V(SwitchOnGeneratorState)           \
+  V(SwitchOnSmiNoFeedback)            \
+  V(TestIn)                           \
+  V(TestInstanceOf)                   \
+  V(ToNumber)                         \
+  V(ToNumeric)                        \
+  BINARY_OP_LIST(V)                   \
+  COMPARE_OP_LIST(V)                  \
+  CLEAR_ACCUMULATOR_LIST(V)           \
+  CLEAR_ENVIRONMENT_LIST(V)           \
+  CONDITIONAL_JUMPS_LIST(V)           \
+  IGNORED_BYTECODE_LIST(V)            \
+  KILL_ENVIRONMENT_LIST(V)            \
+  UNARY_OP_LIST(V)                    \
+  UNCONDITIONAL_JUMPS_LIST(V)         \
+  UNREACHABLE_BYTECODE_LIST(V)
+
+template <typename T>
+struct HandleComparator {
+  bool operator()(const Handle<T>& lhs, const Handle<T>& rhs) const {
+    return lhs.address() < rhs.address();
+  }
+};
+
+struct VirtualContext {
+  unsigned int distance;
+  Handle<Context> context;
+
+  VirtualContext(unsigned int distance_in, Handle<Context> context_in)
+      : distance(distance_in), context(context_in) {
+    CHECK_GT(distance, 0);
+  }
+  bool operator<(const VirtualContext& other) const {
+    return HandleComparator<Context>()(context, other.context) &&
+           distance < other.distance;
+  }
+};
+
+class FunctionBlueprint;
+using ConstantsSet = ZoneSet<Handle<Object>, HandleComparator<Object>>;
+using VirtualContextsSet = ZoneSet<VirtualContext>;
+using MapsSet = ZoneSet<Handle<Map>, HandleComparator<Map>>;
+using BlueprintsSet = ZoneSet<FunctionBlueprint>;
+
+class Hints {
+ public:
+  explicit Hints(Zone* zone);
+
+  static Hints SingleConstant(Handle<Object> constant, Zone* zone);
+
+  const ConstantsSet& constants() const;
+  const MapsSet& maps() const;
+  const BlueprintsSet& function_blueprints() const;
+  const VirtualContextsSet& virtual_contexts() const;
+
+  void AddConstant(Handle<Object> constant);
+  void AddMap(Handle<Map> map);
+  void AddFunctionBlueprint(FunctionBlueprint function_blueprint);
+  void AddVirtualContext(VirtualContext virtual_context);
+
+  void Add(const Hints& other);
+
+  void Clear();
+  bool IsEmpty() const;
+
+#ifdef ENABLE_SLOW_DCHECKS
+  bool Includes(Hints const& other) const;
+  bool Equals(Hints const& other) const;
+#endif
+
+ private:
+  VirtualContextsSet virtual_contexts_;
+  ConstantsSet constants_;
+  MapsSet maps_;
+  BlueprintsSet function_blueprints_;
+};
+
+using HintsVector = ZoneVector<Hints>;
+
+class FunctionBlueprint {
+ public:
+  FunctionBlueprint(Handle<JSFunction> function, Isolate* isolate, Zone* zone);
+
+  FunctionBlueprint(Handle<SharedFunctionInfo> shared,
+                    Handle<FeedbackVector> feedback_vector,
+                    const Hints& context_hints);
+
+  Handle<SharedFunctionInfo> shared() const { return shared_; }
+  Handle<FeedbackVector> feedback_vector() const { return feedback_vector_; }
+  const Hints& context_hints() const { return context_hints_; }
+
+  bool operator<(const FunctionBlueprint& other) const {
+    // A feedback vector is never used for more than one SFI, so it can
+    // be used for strict ordering of blueprints.
+    DCHECK_IMPLIES(feedback_vector_.equals(other.feedback_vector_),
+                   shared_.equals(other.shared_));
+    return HandleComparator<FeedbackVector>()(feedback_vector_,
+                                              other.feedback_vector_);
+  }
+
+ private:
+  Handle<SharedFunctionInfo> shared_;
+  Handle<FeedbackVector> feedback_vector_;
+  Hints context_hints_;
+};
+
+class CompilationSubject {
+ public:
+  explicit CompilationSubject(FunctionBlueprint blueprint)
+      : blueprint_(blueprint) {}
+
+  // The zone parameter is to correctly initialize the blueprint,
+  // which contains zone-allocated context information.
+  CompilationSubject(Handle<JSFunction> closure, Isolate* isolate, Zone* zone);
+
+  const FunctionBlueprint& blueprint() const { return blueprint_; }
+  MaybeHandle<JSFunction> closure() const { return closure_; }
+
+ private:
+  FunctionBlueprint blueprint_;
+  MaybeHandle<JSFunction> closure_;
+};
+
+// The SerializerForBackgroundCompilation makes sure that the relevant function
+// data such as bytecode, SharedFunctionInfo and FeedbackVector, used by later
+// optimizations in the compiler, is copied to the heap broker.
+class SerializerForBackgroundCompilation {
+ public:
+  SerializerForBackgroundCompilation(
+      JSHeapBroker* broker, CompilationDependencies* dependencies, Zone* zone,
+      Handle<JSFunction> closure, SerializerForBackgroundCompilationFlags flags,
+      BailoutId osr_offset);
+  Hints Run();  // NOTE: Returns empty for an already-serialized function.
+
+  class Environment;
+
+ private:
+  SerializerForBackgroundCompilation(
+      JSHeapBroker* broker, CompilationDependencies* dependencies, Zone* zone,
+      CompilationSubject function, base::Optional<Hints> new_target,
+      const HintsVector& arguments,
+      SerializerForBackgroundCompilationFlags flags);
+
+  bool BailoutOnUninitialized(FeedbackSlot slot);
+
+  void TraverseBytecode();
+
+#define DECLARE_VISIT_BYTECODE(name, ...) \
+  void Visit##name(interpreter::BytecodeArrayIterator* iterator);
+  SUPPORTED_BYTECODE_LIST(DECLARE_VISIT_BYTECODE)
+#undef DECLARE_VISIT_BYTECODE
+
+  // Returns whether the callee with the given SFI should be processed further,
+  // i.e. whether it's inlineable.
+  bool ProcessSFIForCallOrConstruct(Handle<SharedFunctionInfo> shared,
+                                    const HintsVector& arguments,
+                                    SpeculationMode speculation_mode);
+  // Returns whether {function} should be serialized for compilation.
+  bool ProcessCalleeForCallOrConstruct(Handle<JSFunction> function,
+                                       const HintsVector& arguments,
+                                       SpeculationMode speculation_mode);
+  void ProcessCallOrConstruct(Hints callee, base::Optional<Hints> new_target,
+                              const HintsVector& arguments, FeedbackSlot slot,
+                              bool with_spread = false);
+  void ProcessCallVarArgs(interpreter::BytecodeArrayIterator* iterator,
+                          ConvertReceiverMode receiver_mode,
+                          bool with_spread = false);
+  void ProcessApiCall(Handle<SharedFunctionInfo> target,
+                      const HintsVector& arguments);
+  void ProcessReceiverMapForApiCall(FunctionTemplateInfoRef target,
+                                    Handle<Map> receiver);
+  void ProcessBuiltinCall(Handle<SharedFunctionInfo> target,
+                          const HintsVector& arguments,
+                          SpeculationMode speculation_mode);
+
+  void ProcessJump(interpreter::BytecodeArrayIterator* iterator);
+
+  void ProcessKeyedPropertyAccess(Hints const& receiver, Hints const& key,
+                                  FeedbackSlot slot, AccessMode mode);
+  void ProcessNamedPropertyAccess(interpreter::BytecodeArrayIterator* iterator,
+                                  AccessMode mode);
+  void ProcessNamedPropertyAccess(Hints const& receiver, NameRef const& name,
+                                  FeedbackSlot slot, AccessMode mode);
+  void ProcessMapHintsForPromises(Hints const& receiver_hints);
+  void ProcessHintsForPromiseResolve(Hints const& resolution_hints);
+  void ProcessHintsForHasInPrototypeChain(Hints const& instance_hints);
+  void ProcessHintsForRegExpTest(Hints const& regexp_hints);
+  PropertyAccessInfo ProcessMapForRegExpTest(MapRef map);
+  void ProcessHintsForFunctionCall(Hints const& target_hints);
+  void ProcessHintsForFunctionBind(Hints const& receiver_hints);
+  void ProcessConstantForOrdinaryHasInstance(HeapObjectRef const& constructor,
+                                             bool* walk_prototypes);
+  void ProcessConstantForInstanceOf(ObjectRef const& constant,
+                                    bool* walk_prototypes);
+  void ProcessHintsForOrdinaryHasInstance(Hints const& constructor_hints,
+                                          Hints const& instance_hints);
+
+  GlobalAccessFeedback const* ProcessFeedbackForGlobalAccess(FeedbackSlot slot);
+
+  NamedAccessFeedback const* ProcessFeedbackMapsForNamedAccess(
+      const MapHandles& maps, AccessMode mode, NameRef const& name);
+  ElementAccessFeedback const* ProcessFeedbackMapsForElementAccess(
+      const MapHandles& maps, AccessMode mode,
+      KeyedAccessMode const& keyed_mode);
+
+  void ProcessFeedbackForCompareOperation(FeedbackSlot slot);
+  void ProcessFeedbackForForIn(FeedbackSlot slot);
+  void ProcessFeedbackForUnaryOrBinaryOperation(
+      FeedbackSlot slot, bool honor_bailout_on_uninitialized);
+
+  void ProcessFeedbackForPropertyAccess(FeedbackSlot slot, AccessMode mode,
+                                        base::Optional<NameRef> static_name);
+  PropertyAccessInfo ProcessMapForNamedPropertyAccess(
+      MapRef const& receiver_map, NameRef const& name, AccessMode mode,
+      base::Optional<JSObjectRef> receiver = base::nullopt);
+
+  void ProcessCreateContext();
+  enum ContextProcessingMode {
+    kIgnoreSlot,
+    kSerializeSlot,
+    kSerializeSlotAndAddToAccumulator
+  };
+
+  void ProcessContextAccess(const Hints& context_hints, int slot, int depth,
+                            ContextProcessingMode mode);
+  void ProcessImmutableLoad(ContextRef const& context, int slot,
+                            ContextProcessingMode mode);
+  void ProcessLdaLookupGlobalSlot(interpreter::BytecodeArrayIterator* iterator);
+  void ProcessLdaLookupContextSlot(
+      interpreter::BytecodeArrayIterator* iterator);
+
+  // Performs extension lookups for [0, depth) like
+  // BytecodeGraphBuilder::CheckContextExtensions().
+  void ProcessCheckContextExtensions(int depth);
+
+  Hints RunChildSerializer(CompilationSubject function,
+                           base::Optional<Hints> new_target,
+                           const HintsVector& arguments, bool with_spread);
+
+  // When (forward-)branching bytecodes are encountered, e.g. a conditional
+  // jump, we call ContributeToJumpTargetEnvironment to "remember" the current
+  // environment, associated with the jump target offset. When serialization
+  // eventually reaches that offset, we call IncorporateJumpTargetEnvironment to
+  // merge that environment back into whatever is the current environment then.
+  // Note: Since there may be multiple jumps to the same target,
+  // ContributeToJumpTargetEnvironment may actually do a merge as well.
+  void ContributeToJumpTargetEnvironment(int target_offset);
+  void IncorporateJumpTargetEnvironment(int target_offset);
+
+  Handle<BytecodeArray> bytecode_array() const;
+  BytecodeAnalysis const& GetBytecodeAnalysis(
+      SerializationPolicy policy = SerializationPolicy::kAssumeSerialized);
+
+  JSHeapBroker* broker() const { return broker_; }
+  CompilationDependencies* dependencies() const { return dependencies_; }
+  Zone* zone() const { return zone_; }
+  Environment* environment() const { return environment_; }
+  SerializerForBackgroundCompilationFlags flags() const { return flags_; }
+  BailoutId osr_offset() const { return osr_offset_; }
+
+  JSHeapBroker* const broker_;
+  CompilationDependencies* const dependencies_;
+  Zone* const zone_;
+  Environment* const environment_;
+  ZoneUnorderedMap<int, Environment*> jump_target_environments_;
+  SerializerForBackgroundCompilationFlags const flags_;
+  BailoutId const osr_offset_;
+};
+
+void RunSerializerForBackgroundCompilation(
+    JSHeapBroker* broker, CompilationDependencies* dependencies, Zone* zone,
+    Handle<JSFunction> closure, SerializerForBackgroundCompilationFlags flags,
+    BailoutId osr_offset) {
+  SerializerForBackgroundCompilation serializer(broker, dependencies, zone,
+                                                closure, flags, osr_offset);
+  serializer.Run();
+}
 
 using BytecodeArrayIterator = interpreter::BytecodeArrayIterator;
 
@@ -67,6 +534,12 @@ bool Hints::Equals(Hints const& other) const {
   return this->Includes(other) && other.Includes(*this);
 }
 #endif
+
+Hints Hints::SingleConstant(Handle<Object> constant, Zone* zone) {
+  Hints result(zone);
+  result.AddConstant(constant);
+  return result;
+}
 
 const ConstantsSet& Hints::constants() const { return constants_; }
 
@@ -200,7 +673,7 @@ class SerializerForBackgroundCompilation::Environment : public ZoneObject {
 
   // Appends the hints for the given register range to {dst} (in order).
   void ExportRegisterHints(interpreter::Register first, size_t count,
-                           HintsVector& dst);
+                           HintsVector* dst);
 
  private:
   friend std::ostream& operator<<(std::ostream& out, const Environment& env);
@@ -265,8 +738,8 @@ SerializerForBackgroundCompilation::Environment::Environment(
   }
 
   // Pad the rest with "undefined".
-  Hints undefined_hint(zone);
-  undefined_hint.AddConstant(isolate->factory()->undefined_value());
+  Hints undefined_hint =
+      Hints::SingleConstant(isolate->factory()->undefined_value(), zone);
   for (size_t i = arguments.size(); i < param_count; ++i) {
     ephemeral_hints_[i] = undefined_hint;
   }
@@ -362,14 +835,16 @@ int SerializerForBackgroundCompilation::Environment::RegisterToLocalIndex(
 
 SerializerForBackgroundCompilation::SerializerForBackgroundCompilation(
     JSHeapBroker* broker, CompilationDependencies* dependencies, Zone* zone,
-    Handle<JSFunction> closure, SerializerForBackgroundCompilationFlags flags)
+    Handle<JSFunction> closure, SerializerForBackgroundCompilationFlags flags,
+    BailoutId osr_offset)
     : broker_(broker),
       dependencies_(dependencies),
       zone_(zone),
       environment_(new (zone) Environment(
           zone, CompilationSubject(closure, broker_->isolate(), zone))),
       jump_target_environments_(zone),
-      flags_(flags) {
+      flags_(flags),
+      osr_offset_(osr_offset) {
   JSFunctionRef(broker, closure).Serialize();
 }
 
@@ -383,8 +858,8 @@ SerializerForBackgroundCompilation::SerializerForBackgroundCompilation(
       environment_(new (zone) Environment(zone, broker_->isolate(), function,
                                           new_target, arguments)),
       jump_target_environments_(zone),
-      flags_(flags) {
-  DCHECK(!(flags_ & SerializerForBackgroundCompilationFlag::kOsr));
+      flags_(flags),
+      osr_offset_(BailoutId::None()) {
   TraceScope tracer(
       broker_, this,
       "SerializerForBackgroundCompilation::SerializerForBackgroundCompilation");
@@ -402,7 +877,7 @@ bool SerializerForBackgroundCompilation::BailoutOnUninitialized(
         SerializerForBackgroundCompilationFlag::kBailoutOnUninitialized)) {
     return false;
   }
-  if (flags() & SerializerForBackgroundCompilationFlag::kOsr) {
+  if (!osr_offset().IsNone()) {
     // Exclude OSR from this optimization because we might end up skipping the
     // OSR entry point. TODO(neis): Support OSR?
     return false;
@@ -479,29 +954,52 @@ class ExceptionHandlerMatcher {
   std::set<int>::const_iterator handlers_iterator_;
 };
 
+Handle<BytecodeArray> SerializerForBackgroundCompilation::bytecode_array()
+    const {
+  return handle(environment()->function().shared()->GetBytecodeArray(),
+                broker()->isolate());
+}
+
+BytecodeAnalysis const& SerializerForBackgroundCompilation::GetBytecodeAnalysis(
+    SerializationPolicy policy) {
+  return broker()->GetBytecodeAnalysis(
+      bytecode_array(), osr_offset(),
+      flags() &
+          SerializerForBackgroundCompilationFlag::kAnalyzeEnvironmentLiveness,
+      policy);
+}
+
 void SerializerForBackgroundCompilation::TraverseBytecode() {
-  BytecodeArrayRef bytecode_array(
-      broker(), handle(environment()->function().shared()->GetBytecodeArray(),
-                       broker()->isolate()));
-  bytecode_array.SerializeForCompilation();
-  BytecodeArrayIterator iterator(bytecode_array.object());
-  ExceptionHandlerMatcher handler_matcher(iterator, bytecode_array.object());
+  BytecodeAnalysis const& bytecode_analysis =
+      GetBytecodeAnalysis(SerializationPolicy::kSerializeIfNeeded);
+  BytecodeArrayRef(broker(), bytecode_array()).SerializeForCompilation();
+
+  BytecodeArrayIterator iterator(bytecode_array());
+  ExceptionHandlerMatcher handler_matcher(iterator, bytecode_array());
 
   for (; !iterator.done(); iterator.Advance()) {
-    IncorporateJumpTargetEnvironment(iterator.current_offset());
+    int const current_offset = iterator.current_offset();
+    IncorporateJumpTargetEnvironment(current_offset);
 
     TRACE_BROKER(broker(),
-                 "Handling bytecode: " << iterator.current_offset() << "  "
+                 "Handling bytecode: " << current_offset << "  "
                                        << iterator.current_bytecode());
     TRACE_BROKER(broker(), "Current environment: " << *environment());
 
     if (environment()->IsDead()) {
-      if (iterator.current_bytecode() ==
-              interpreter::Bytecode::kResumeGenerator ||
-          handler_matcher.CurrentBytecodeIsExceptionHandlerStart()) {
+      if (handler_matcher.CurrentBytecodeIsExceptionHandlerStart()) {
         environment()->Revive();
       } else {
         continue;  // Skip this bytecode since TF won't generate code for it.
+      }
+    }
+
+    if (bytecode_analysis.IsLoopHeader(current_offset)) {
+      // Graph builder might insert jumps to resume targets in the loop body.
+      LoopInfo const& loop_info =
+          bytecode_analysis.GetLoopInfoFor(current_offset);
+      for (const auto& target : loop_info.resume_jump_targets()) {
+        ContributeToJumpTargetEnvironment(target.target_offset());
       }
     }
 
@@ -536,6 +1034,21 @@ void SerializerForBackgroundCompilation::VisitGetSuperConstructor(
       environment()->register_hints(dst).AddConstant(proto.object());
     }
   }
+}
+
+void SerializerForBackgroundCompilation::VisitGetTemplateObject(
+    BytecodeArrayIterator* iterator) {
+  ObjectRef description(
+      broker(), iterator->GetConstantForIndexOperand(0, broker()->isolate()));
+  FeedbackSlot slot = iterator->GetSlotOperand(1);
+  FeedbackVectorRef feedback_vector(
+      broker(), environment()->function().feedback_vector());
+  SharedFunctionInfoRef shared(broker(), environment()->function().shared());
+  JSArrayRef template_object =
+      shared.GetTemplateObject(description, feedback_vector, slot,
+                               SerializationPolicy::kSerializeIfNeeded);
+  environment()->accumulator_hints().Clear();
+  environment()->accumulator_hints().AddConstant(template_object.object());
 }
 
 void SerializerForBackgroundCompilation::VisitLdaTrue(
@@ -597,7 +1110,7 @@ void SerializerForBackgroundCompilation::VisitInvokeIntrinsic(
     size_t reg_count = iterator->GetRegisterCountOperand(2);
     CHECK_EQ(reg_count, 3);
     HintsVector arguments(zone());
-    environment()->ExportRegisterHints(first_reg, reg_count, arguments);
+    environment()->ExportRegisterHints(first_reg, reg_count, &arguments);
     Hints const& resolution_hints = arguments[1];  // The resolution object.
     ProcessHintsForPromiseResolve(resolution_hints);
     environment()->accumulator_hints().Clear();
@@ -638,15 +1151,14 @@ void SerializerForBackgroundCompilation::VisitPopContext(
 }
 
 void SerializerForBackgroundCompilation::ProcessImmutableLoad(
-    ContextRef& context_ref, int slot, ContextProcessingMode mode) {
+    ContextRef const& context_ref, int slot, ContextProcessingMode mode) {
   DCHECK(mode == kSerializeSlot || mode == kSerializeSlotAndAddToAccumulator);
-  context_ref.SerializeSlot(slot);
+  base::Optional<ObjectRef> slot_value =
+      context_ref.get(slot, SerializationPolicy::kSerializeIfNeeded);
 
   // Also, put the object into the constant hints for the accumulator.
-  if (mode == kSerializeSlotAndAddToAccumulator) {
-    Handle<Object> slot_value(context_ref.object()->get(slot),
-                              broker()->isolate());
-    environment()->accumulator_hints().AddConstant(slot_value);
+  if (mode == kSerializeSlotAndAddToAccumulator && slot_value.has_value()) {
+    environment()->accumulator_hints().AddConstant(slot_value.value().object());
   }
 }
 
@@ -662,28 +1174,22 @@ void SerializerForBackgroundCompilation::ProcessContextAccess(
     if (x->IsContext()) {
       // Walk this context to the given depth and serialize the slot found.
       ContextRef context_ref(broker(), x);
-      // TODO(mvstanton): Add a depth parameter to SerializeContextChain.
-      context_ref.SerializeContextChain();
-      if (mode != kIgnoreSlot) {
-        size_t remaining_depth = depth;
-        context_ref = context_ref.previous(&remaining_depth);
-        if (remaining_depth == 0) {
-          ProcessImmutableLoad(context_ref, slot, mode);
-        }
+      size_t remaining_depth = depth;
+      context_ref = context_ref.previous(
+          &remaining_depth, SerializationPolicy::kSerializeIfNeeded);
+      if (remaining_depth == 0 && mode != kIgnoreSlot) {
+        ProcessImmutableLoad(context_ref, slot, mode);
       }
     }
   }
   for (auto x : context_hints.virtual_contexts()) {
     if (x.distance <= static_cast<unsigned int>(depth)) {
       ContextRef context_ref(broker(), x.context);
-      // TODO(mvstanton): Add a depth parameter to SerializeContextChain.
-      context_ref.SerializeContextChain();
-      if (mode != kIgnoreSlot) {
-        size_t remaining_depth = depth - x.distance;
-        context_ref = context_ref.previous(&remaining_depth);
-        if (remaining_depth == 0) {
-          ProcessImmutableLoad(context_ref, slot, mode);
-        }
+      size_t remaining_depth = depth - x.distance;
+      context_ref = context_ref.previous(
+          &remaining_depth, SerializationPolicy::kSerializeIfNeeded);
+      if (remaining_depth == 0 && mode != kIgnoreSlot) {
+        ProcessImmutableLoad(context_ref, slot, mode);
       }
     }
   }
@@ -811,6 +1317,18 @@ void SerializerForBackgroundCompilation::VisitCreateCatchContext(
   ProcessCreateContext();
 }
 
+void SerializerForBackgroundCompilation::VisitForInNext(
+    BytecodeArrayIterator* iterator) {
+  FeedbackSlot slot = iterator->GetSlotOperand(3);
+  ProcessFeedbackForForIn(slot);
+}
+
+void SerializerForBackgroundCompilation::VisitForInPrepare(
+    BytecodeArrayIterator* iterator) {
+  FeedbackSlot slot = iterator->GetSlotOperand(1);
+  ProcessFeedbackForForIn(slot);
+}
+
 void SerializerForBackgroundCompilation::ProcessCreateContext() {
   Hints& accumulator_hints = environment()->accumulator_hints();
   accumulator_hints.Clear();
@@ -835,9 +1353,10 @@ void SerializerForBackgroundCompilation::ProcessCreateContext() {
 
 void SerializerForBackgroundCompilation::VisitCreateClosure(
     BytecodeArrayIterator* iterator) {
+  environment()->accumulator_hints().Clear();
+
   Handle<SharedFunctionInfo> shared = Handle<SharedFunctionInfo>::cast(
       iterator->GetConstantForIndexOperand(0, broker()->isolate()));
-
   Handle<FeedbackCell> feedback_cell =
       environment()->function().feedback_vector()->GetClosureFeedbackCell(
           iterator->GetIndexOperand(1));
@@ -845,14 +1364,10 @@ void SerializerForBackgroundCompilation::VisitCreateClosure(
   Handle<Object> cell_value(feedback_cell->value(), broker()->isolate());
   ObjectRef cell_value_ref(broker(), cell_value);
 
-  environment()->accumulator_hints().Clear();
   if (cell_value->IsFeedbackVector()) {
-    // Gather the context hints from the current context register hint
-    // structure.
     FunctionBlueprint blueprint(shared,
                                 Handle<FeedbackVector>::cast(cell_value),
                                 environment()->current_context_hints());
-
     environment()->accumulator_hints().AddFunctionBlueprint(blueprint);
   }
 }
@@ -868,9 +1383,8 @@ void SerializerForBackgroundCompilation::VisitCallUndefinedReceiver0(
       environment()->register_hints(iterator->GetRegisterOperand(0));
   FeedbackSlot slot = iterator->GetSlotOperand(1);
 
-  Hints receiver(zone());
-  receiver.AddConstant(broker()->isolate()->factory()->undefined_value());
-
+  Hints receiver = Hints::SingleConstant(
+      broker()->isolate()->factory()->undefined_value(), zone());
   HintsVector parameters({receiver}, zone());
   ProcessCallOrConstruct(callee, base::nullopt, parameters, slot);
 }
@@ -883,9 +1397,8 @@ void SerializerForBackgroundCompilation::VisitCallUndefinedReceiver1(
       environment()->register_hints(iterator->GetRegisterOperand(1));
   FeedbackSlot slot = iterator->GetSlotOperand(2);
 
-  Hints receiver(zone());
-  receiver.AddConstant(broker()->isolate()->factory()->undefined_value());
-
+  Hints receiver = Hints::SingleConstant(
+      broker()->isolate()->factory()->undefined_value(), zone());
   HintsVector parameters({receiver, arg0}, zone());
   ProcessCallOrConstruct(callee, base::nullopt, parameters, slot);
 }
@@ -900,9 +1413,8 @@ void SerializerForBackgroundCompilation::VisitCallUndefinedReceiver2(
       environment()->register_hints(iterator->GetRegisterOperand(2));
   FeedbackSlot slot = iterator->GetSlotOperand(3);
 
-  Hints receiver(zone());
-  receiver.AddConstant(broker()->isolate()->factory()->undefined_value());
-
+  Hints receiver = Hints::SingleConstant(
+      broker()->isolate()->factory()->undefined_value(), zone());
   HintsVector parameters({receiver, arg0, arg1}, zone());
   ProcessCallOrConstruct(callee, base::nullopt, parameters, slot);
 }
@@ -971,7 +1483,8 @@ void SerializerForBackgroundCompilation::VisitCallJSRuntime(
   // BytecodeGraphBuilder::VisitCallJSRuntime needs the {runtime_index}
   // slot in the native context to be serialized.
   const int runtime_index = iterator->GetNativeContextIndexOperand(0);
-  broker()->native_context().SerializeSlot(runtime_index);
+  broker()->native_context().get(runtime_index,
+                                 SerializationPolicy::kSerializeIfNeeded);
 }
 
 Hints SerializerForBackgroundCompilation::RunChildSerializer(
@@ -996,80 +1509,137 @@ Hints SerializerForBackgroundCompilation::RunChildSerializer(
 
   SerializerForBackgroundCompilation child_serializer(
       broker(), dependencies(), zone(), function, new_target, arguments,
-      flags().without(SerializerForBackgroundCompilationFlag::kOsr));
+      flags());
   return child_serializer.Run();
 }
 
+bool SerializerForBackgroundCompilation::ProcessSFIForCallOrConstruct(
+    Handle<SharedFunctionInfo> shared, const HintsVector& arguments,
+    SpeculationMode speculation_mode) {
+  if (shared->IsApiFunction()) {
+    ProcessApiCall(shared, arguments);
+    DCHECK(!shared->IsInlineable());
+  } else if (shared->HasBuiltinId()) {
+    ProcessBuiltinCall(shared, arguments, speculation_mode);
+    DCHECK(!shared->IsInlineable());
+  }
+  return shared->IsInlineable();
+}
+
+bool SerializerForBackgroundCompilation::ProcessCalleeForCallOrConstruct(
+    Handle<JSFunction> function, const HintsVector& arguments,
+    SpeculationMode speculation_mode) {
+  JSFunctionRef(broker(), function).Serialize();
+
+  Handle<SharedFunctionInfo> shared(function->shared(), broker()->isolate());
+
+  return ProcessSFIForCallOrConstruct(shared, arguments, speculation_mode) &&
+         function->has_feedback_vector();
+}
+
 namespace {
-base::Optional<HeapObjectRef> GetHeapObjectFeedback(
-    JSHeapBroker* broker, Handle<FeedbackVector> feedback_vector,
-    FeedbackSlot slot) {
-  if (slot.IsInvalid()) return base::nullopt;
-  FeedbackNexus nexus(feedback_vector, slot);
-  VectorSlotPair feedback(feedback_vector, slot, nexus.ic_state());
-  DCHECK(feedback.IsValid());
-  if (nexus.IsUninitialized()) return base::nullopt;
-  HeapObject object;
-  if (!nexus.GetFeedback()->GetHeapObject(&object)) return base::nullopt;
-  return HeapObjectRef(broker, handle(object, broker->isolate()));
+// Returns the innermost bound target, if it's a JSFunction and inserts
+// all bound arguments and {original_arguments} into {expanded_arguments}
+// in the appropriate order.
+MaybeHandle<JSFunction> UnrollBoundFunction(
+    JSBoundFunctionRef const& bound_function, JSHeapBroker* broker,
+    const HintsVector& original_arguments, HintsVector* expanded_arguments) {
+  DCHECK(expanded_arguments->empty());
+
+  JSReceiverRef target = bound_function.AsJSReceiver();
+  HintsVector reversed_bound_arguments(broker->zone());
+  for (; target.IsJSBoundFunction();
+       target = target.AsJSBoundFunction().bound_target_function()) {
+    for (int i = target.AsJSBoundFunction().bound_arguments().length() - 1;
+         i >= 0; --i) {
+      Hints arg = Hints::SingleConstant(
+          target.AsJSBoundFunction().bound_arguments().get(i).object(),
+          broker->zone());
+      reversed_bound_arguments.push_back(arg);
+    }
+    Hints arg = Hints::SingleConstant(
+        target.AsJSBoundFunction().bound_this().object(), broker->zone());
+    reversed_bound_arguments.push_back(arg);
+  }
+
+  if (!target.IsJSFunction()) return MaybeHandle<JSFunction>();
+
+  expanded_arguments->insert(expanded_arguments->end(),
+                             reversed_bound_arguments.rbegin(),
+                             reversed_bound_arguments.rend());
+  expanded_arguments->insert(expanded_arguments->end(),
+                             original_arguments.begin(),
+                             original_arguments.end());
+
+  return target.AsJSFunction().object();
 }
 }  // namespace
 
 void SerializerForBackgroundCompilation::ProcessCallOrConstruct(
     Hints callee, base::Optional<Hints> new_target,
     const HintsVector& arguments, FeedbackSlot slot, bool with_spread) {
-  // TODO(neis): Make this part of ProcessFeedback*?
   if (BailoutOnUninitialized(slot)) return;
 
+  FeedbackSource source(environment()->function().feedback_vector(), slot);
+  ProcessedFeedback const* feedback = broker()->ProcessFeedbackForCall(source);
+
   // Incorporate feedback into hints.
-  base::Optional<HeapObjectRef> feedback = GetHeapObjectFeedback(
-      broker(), environment()->function().feedback_vector(), slot);
-  if (feedback.has_value() && feedback->map().is_callable()) {
-    if (new_target.has_value()) {
-      // Construct; feedback is new_target, which often is also the callee.
-      new_target->AddConstant(feedback->object());
-      callee.AddConstant(feedback->object());
-    } else {
-      // Call; feedback is callee.
-      callee.AddConstant(feedback->object());
+  SpeculationMode speculation_mode = SpeculationMode::kDisallowSpeculation;
+  if (!feedback->IsInsufficient()) {
+    speculation_mode = feedback->AsCall()->speculation_mode();
+    base::Optional<HeapObjectRef> target = feedback->AsCall()->target();
+    if (target.has_value() && target->map().is_callable()) {
+      // TODO(mvstanton): if the map isn't callable then we have an allocation
+      // site, and it may make sense to add the Array JSFunction constant.
+      if (new_target.has_value()) {
+        // Construct; feedback is new_target, which often is also the callee.
+        new_target->AddConstant(target->object());
+        callee.AddConstant(target->object());
+      } else {
+        // Call; target is callee.
+        callee.AddConstant(target->object());
+      }
     }
   }
 
   environment()->accumulator_hints().Clear();
 
+  // For JSCallReducer::ReduceJSCall and JSCallReducer::ReduceJSConstruct.
   for (auto hint : callee.constants()) {
-    if (!hint->IsJSFunction()) continue;
+    const HintsVector* actual_arguments = &arguments;
+    Handle<JSFunction> function;
+    HintsVector expanded_arguments(zone());
+    if (hint->IsJSBoundFunction()) {
+      JSBoundFunctionRef bound_function(broker(),
+                                        Handle<JSBoundFunction>::cast(hint));
+      bound_function.Serialize();
 
-    Handle<JSFunction> function = Handle<JSFunction>::cast(hint);
-    Handle<SharedFunctionInfo> shared(function->shared(), broker()->isolate());
-
-    if (shared->IsApiFunction()) {
-      ProcessApiCall(shared, arguments);
-      DCHECK(!shared->IsInlineable());
-    } else if (shared->HasBuiltinId()) {
-      ProcessBuiltinCall(shared, arguments);
-      DCHECK(!shared->IsInlineable());
+      MaybeHandle<JSFunction> maybe_function = UnrollBoundFunction(
+          bound_function, broker(), arguments, &expanded_arguments);
+      if (maybe_function.is_null()) continue;
+      function = maybe_function.ToHandleChecked();
+      actual_arguments = &expanded_arguments;
+    } else if (hint->IsJSFunction()) {
+      function = Handle<JSFunction>::cast(hint);
+    } else {
+      continue;
     }
 
-    if (!shared->IsInlineable() || !function->has_feedback_vector()) continue;
-
-    environment()->accumulator_hints().Add(RunChildSerializer(
-        CompilationSubject(function, broker()->isolate(), zone()), new_target,
-        arguments, with_spread));
+    if (ProcessCalleeForCallOrConstruct(function, *actual_arguments,
+                                        speculation_mode)) {
+      environment()->accumulator_hints().Add(RunChildSerializer(
+          CompilationSubject(function, broker()->isolate(), zone()), new_target,
+          *actual_arguments, with_spread));
+    }
   }
 
+  // For JSCallReducer::ReduceJSCall and JSCallReducer::ReduceJSConstruct.
   for (auto hint : callee.function_blueprints()) {
     Handle<SharedFunctionInfo> shared = hint.shared();
-
-    if (shared->IsApiFunction()) {
-      ProcessApiCall(shared, arguments);
-      DCHECK(!shared->IsInlineable());
-    } else if (shared->HasBuiltinId()) {
-      ProcessBuiltinCall(shared, arguments);
-      DCHECK(!shared->IsInlineable());
+    if (!ProcessSFIForCallOrConstruct(shared, arguments, speculation_mode)) {
+      continue;
     }
 
-    if (!shared->IsInlineable()) continue;
     environment()->accumulator_hints().Add(RunChildSerializer(
         CompilationSubject(hint), new_target, arguments, with_spread));
   }
@@ -1088,11 +1658,10 @@ void SerializerForBackgroundCompilation::ProcessCallVarArgs(
   // The receiver is either given in the first register or it is implicitly
   // the {undefined} value.
   if (receiver_mode == ConvertReceiverMode::kNullOrUndefined) {
-    Hints receiver(zone());
-    receiver.AddConstant(broker()->isolate()->factory()->undefined_value());
-    arguments.push_back(receiver);
+    arguments.push_back(Hints::SingleConstant(
+        broker()->isolate()->factory()->undefined_value(), zone()));
   }
-  environment()->ExportRegisterHints(first_reg, reg_count, arguments);
+  environment()->ExportRegisterHints(first_reg, reg_count, &arguments);
 
   ProcessCallOrConstruct(callee, base::nullopt, arguments, slot);
 }
@@ -1138,19 +1707,18 @@ void SerializerForBackgroundCompilation::ProcessApiCall(
 }
 
 void SerializerForBackgroundCompilation::ProcessReceiverMapForApiCall(
-    FunctionTemplateInfoRef& target, Handle<Map> receiver) {
-  if (receiver->is_access_check_needed()) {
-    return;
+    FunctionTemplateInfoRef target, Handle<Map> receiver) {
+  if (!receiver->is_access_check_needed()) {
+    MapRef receiver_map(broker(), receiver);
+    TRACE_BROKER(broker(), "Serializing holder for target:" << target);
+    target.LookupHolderOfExpectedType(receiver_map,
+                                      SerializationPolicy::kSerializeIfNeeded);
   }
-
-  MapRef receiver_map(broker(), receiver);
-  TRACE_BROKER(broker(), "Serializing holder for target:" << target);
-
-  target.LookupHolderOfExpectedType(receiver_map, true);
 }
 
 void SerializerForBackgroundCompilation::ProcessBuiltinCall(
-    Handle<SharedFunctionInfo> target, const HintsVector& arguments) {
+    Handle<SharedFunctionInfo> target, const HintsVector& arguments,
+    SpeculationMode speculation_mode) {
   DCHECK(target->HasBuiltinId());
   const int builtin_id = target->builtin_id();
   const char* name = Builtins::name(builtin_id);
@@ -1158,20 +1726,26 @@ void SerializerForBackgroundCompilation::ProcessBuiltinCall(
   switch (builtin_id) {
     case Builtins::kPromisePrototypeCatch: {
       // For JSCallReducer::ReducePromisePrototypeCatch.
-      CHECK_GE(arguments.size(), 1);
-      ProcessMapHintsForPromises(arguments[0]);
+      if (speculation_mode != SpeculationMode::kDisallowSpeculation) {
+        CHECK_GE(arguments.size(), 1);
+        ProcessMapHintsForPromises(arguments[0]);
+      }
       break;
     }
     case Builtins::kPromisePrototypeFinally: {
       // For JSCallReducer::ReducePromisePrototypeFinally.
-      CHECK_GE(arguments.size(), 1);
-      ProcessMapHintsForPromises(arguments[0]);
+      if (speculation_mode != SpeculationMode::kDisallowSpeculation) {
+        CHECK_GE(arguments.size(), 1);
+        ProcessMapHintsForPromises(arguments[0]);
+      }
       break;
     }
     case Builtins::kPromisePrototypeThen: {
       // For JSCallReducer::ReducePromisePrototypeThen.
-      CHECK_GE(arguments.size(), 1);
-      ProcessMapHintsForPromises(arguments[0]);
+      if (speculation_mode != SpeculationMode::kDisallowSpeculation) {
+        CHECK_GE(arguments.size(), 1);
+        ProcessMapHintsForPromises(arguments[0]);
+      }
       break;
     }
     case Builtins::kPromiseResolveTrampoline:
@@ -1190,8 +1764,74 @@ void SerializerForBackgroundCompilation::ProcessBuiltinCall(
         ProcessHintsForPromiseResolve(resolution_hints);
       }
       break;
+    case Builtins::kRegExpPrototypeTest:
+      // For JSCallReducer::ReduceRegExpPrototypeTest.
+      if (arguments.size() >= 1 &&
+          speculation_mode != SpeculationMode::kDisallowSpeculation) {
+        Hints const& regexp_hints = arguments[0];
+        ProcessHintsForRegExpTest(regexp_hints);
+      }
+      break;
+    case Builtins::kFunctionPrototypeCall:
+      if (arguments.size() >= 1 &&
+          speculation_mode != SpeculationMode::kDisallowSpeculation) {
+        Hints const& target_hints = arguments[0];
+        ProcessHintsForFunctionCall(target_hints);
+      }
+      break;
+    case Builtins::kObjectPrototypeIsPrototypeOf:
+      if (arguments.size() >= 2) {
+        ProcessHintsForHasInPrototypeChain(arguments[1]);
+      }
+      break;
+    case Builtins::kFunctionPrototypeHasInstance:
+      // For JSCallReducer::ReduceFunctionPrototypeHasInstance.
+      if (arguments.size() >= 2) {
+        ProcessHintsForOrdinaryHasInstance(arguments[0], arguments[1]);
+      }
+      break;
+    case Builtins::kFastFunctionPrototypeBind:
+      if (arguments.size() >= 1 &&
+          speculation_mode != SpeculationMode::kDisallowSpeculation) {
+        ProcessHintsForFunctionBind(arguments[0]);
+      }
+      break;
     default:
       break;
+  }
+}
+
+void SerializerForBackgroundCompilation::ProcessHintsForOrdinaryHasInstance(
+    Hints const& constructor_hints, Hints const& instance_hints) {
+  bool walk_prototypes = false;
+  for (Handle<Object> constructor : constructor_hints.constants()) {
+    // For JSNativeContextSpecialization::ReduceJSOrdinaryHasInstance.
+    if (constructor->IsHeapObject()) {
+      ProcessConstantForOrdinaryHasInstance(
+          HeapObjectRef(broker(), constructor), &walk_prototypes);
+    }
+  }
+  // For JSNativeContextSpecialization::ReduceJSHasInPrototypeChain.
+  if (walk_prototypes) ProcessHintsForHasInPrototypeChain(instance_hints);
+}
+
+void SerializerForBackgroundCompilation::ProcessHintsForHasInPrototypeChain(
+    Hints const& instance_hints) {
+  auto processMap = [&](Handle<Map> map_handle) {
+    MapRef map(broker(), map_handle);
+    while (map.IsJSObjectMap()) {
+      map.SerializePrototype();
+      map = map.prototype().map();
+    }
+  };
+
+  for (auto hint : instance_hints.constants()) {
+    if (!hint->IsHeapObject()) continue;
+    Handle<HeapObject> object(Handle<HeapObject>::cast(hint));
+    processMap(handle(object->map(), broker()->isolate()));
+  }
+  for (auto map_hint : instance_hints.maps()) {
+    processMap(map_hint);
   }
 }
 
@@ -1224,6 +1864,84 @@ void SerializerForBackgroundCompilation::ProcessMapHintsForPromises(
   for (auto map : receiver_hints.maps()) {
     if (!map->IsJSPromiseMap()) continue;
     MapRef(broker(), map).SerializePrototype();
+  }
+}
+
+PropertyAccessInfo SerializerForBackgroundCompilation::ProcessMapForRegExpTest(
+    MapRef map) {
+  PropertyAccessInfo ai_exec =
+      broker()->CreateAccessInfoForLoadingExec(map, dependencies());
+
+  Handle<JSObject> holder;
+  if (ai_exec.IsDataConstant() && ai_exec.holder().ToHandle(&holder)) {
+    // The property is on the prototype chain.
+    JSObjectRef holder_ref(broker(), holder);
+    holder_ref.GetOwnDataProperty(ai_exec.field_representation(),
+                                  ai_exec.field_index(),
+                                  SerializationPolicy::kSerializeIfNeeded);
+  }
+  return ai_exec;
+}
+
+void SerializerForBackgroundCompilation::ProcessHintsForRegExpTest(
+    Hints const& regexp_hints) {
+  for (auto hint : regexp_hints.constants()) {
+    if (!hint->IsJSRegExp()) continue;
+    Handle<JSRegExp> regexp(Handle<JSRegExp>::cast(hint));
+    Handle<Map> regexp_map(regexp->map(), broker()->isolate());
+    PropertyAccessInfo ai_exec =
+        ProcessMapForRegExpTest(MapRef(broker(), regexp_map));
+    Handle<JSObject> holder;
+    if (ai_exec.IsDataConstant() && !ai_exec.holder().ToHandle(&holder)) {
+      // The property is on the object itself.
+      JSObjectRef holder_ref(broker(), regexp);
+      holder_ref.GetOwnDataProperty(ai_exec.field_representation(),
+                                    ai_exec.field_index(),
+                                    SerializationPolicy::kSerializeIfNeeded);
+    }
+  }
+
+  for (auto map : regexp_hints.maps()) {
+    if (!map->IsJSRegExpMap()) continue;
+    ProcessMapForRegExpTest(MapRef(broker(), map));
+  }
+}
+
+void SerializerForBackgroundCompilation::ProcessHintsForFunctionCall(
+    Hints const& target_hints) {
+  for (auto constant : target_hints.constants()) {
+    if (!constant->IsJSFunction()) continue;
+    JSFunctionRef func(broker(), constant);
+    func.Serialize();
+  }
+}
+
+namespace {
+void ProcessMapForFunctionBind(MapRef map) {
+  map.SerializePrototype();
+  int min_nof_descriptors = i::Max(JSFunction::kLengthDescriptorIndex,
+                                   JSFunction::kNameDescriptorIndex) +
+                            1;
+  if (map.NumberOfOwnDescriptors() >= min_nof_descriptors) {
+    map.SerializeOwnDescriptor(JSFunction::kLengthDescriptorIndex);
+    map.SerializeOwnDescriptor(JSFunction::kNameDescriptorIndex);
+  }
+}
+}  // namespace
+
+void SerializerForBackgroundCompilation::ProcessHintsForFunctionBind(
+    Hints const& receiver_hints) {
+  for (auto constant : receiver_hints.constants()) {
+    if (!constant->IsJSFunction()) continue;
+    JSFunctionRef function(broker(), constant);
+    function.Serialize();
+    ProcessMapForFunctionBind(function.map());
+  }
+
+  for (auto map : receiver_hints.maps()) {
+    if (!map->IsJSFunctionMap()) continue;
+    MapRef map_ref(broker(), map);
+    ProcessMapForFunctionBind(map_ref);
   }
 }
 
@@ -1270,11 +1988,18 @@ void SerializerForBackgroundCompilation::VisitSwitchOnSmiNoFeedback(
   }
 }
 
+void SerializerForBackgroundCompilation::VisitSwitchOnGeneratorState(
+    interpreter::BytecodeArrayIterator* iterator) {
+  for (const auto& target : GetBytecodeAnalysis().resume_jump_targets()) {
+    ContributeToJumpTargetEnvironment(target.target_offset());
+  }
+}
+
 void SerializerForBackgroundCompilation::Environment::ExportRegisterHints(
-    interpreter::Register first, size_t count, HintsVector& dst) {
+    interpreter::Register first, size_t count, HintsVector* dst) {
   const int reg_base = first.index();
   for (int i = 0; i < static_cast<int>(count); ++i) {
-    dst.push_back(register_hints(interpreter::Register(reg_base + i)));
+    dst->push_back(register_hints(interpreter::Register(reg_base + i)));
   }
 }
 
@@ -1288,7 +2013,7 @@ void SerializerForBackgroundCompilation::VisitConstruct(
   const Hints& new_target = environment()->accumulator_hints();
 
   HintsVector arguments(zone());
-  environment()->ExportRegisterHints(first_reg, reg_count, arguments);
+  environment()->ExportRegisterHints(first_reg, reg_count, &arguments);
 
   ProcessCallOrConstruct(callee, new_target, arguments, slot);
 }
@@ -1303,7 +2028,7 @@ void SerializerForBackgroundCompilation::VisitConstructWithSpread(
   const Hints& new_target = environment()->accumulator_hints();
 
   HintsVector arguments(zone());
-  environment()->ExportRegisterHints(first_reg, reg_count, arguments);
+  environment()->ExportRegisterHints(first_reg, reg_count, &arguments);
 
   ProcessCallOrConstruct(callee, new_target, arguments, slot, true);
 }
@@ -1437,39 +2162,73 @@ SerializerForBackgroundCompilation::ProcessFeedbackMapsForElementAccess(
   return result;
 }
 
+void SerializerForBackgroundCompilation::ProcessFeedbackForCompareOperation(
+    FeedbackSlot slot) {
+  if (BailoutOnUninitialized(slot)) return;
+  FeedbackSource source(environment()->function().feedback_vector(), slot);
+  broker()->ProcessFeedbackForCompareOperation(source);
+  environment()->accumulator_hints().Clear();
+}
+
+void SerializerForBackgroundCompilation::ProcessFeedbackForForIn(
+    FeedbackSlot slot) {
+  if (BailoutOnUninitialized(slot)) return;
+  FeedbackSource source(environment()->function().feedback_vector(), slot);
+  broker()->ProcessFeedbackForForIn(source);
+  environment()->accumulator_hints().Clear();
+}
+
+void SerializerForBackgroundCompilation::
+    ProcessFeedbackForUnaryOrBinaryOperation(
+        FeedbackSlot slot, bool honor_bailout_on_uninitialized) {
+  if (honor_bailout_on_uninitialized && BailoutOnUninitialized(slot)) return;
+  FeedbackSource source(environment()->function().feedback_vector(), slot);
+  // Internally V8 uses binary op feedback also for unary ops.
+  broker()->ProcessFeedbackForBinaryOperation(source);
+  environment()->accumulator_hints().Clear();
+}
+
 NamedAccessFeedback const*
 SerializerForBackgroundCompilation::ProcessFeedbackMapsForNamedAccess(
     const MapHandles& maps, AccessMode mode, NameRef const& name) {
   ZoneVector<PropertyAccessInfo> access_infos(broker()->zone());
   for (Handle<Map> map : maps) {
     MapRef map_ref(broker(), map);
-    ProcessMapForNamedPropertyAccess(map_ref, name);
-    AccessInfoFactory access_info_factory(broker(), dependencies(),
-                                          broker()->zone());
-    PropertyAccessInfo info(access_info_factory.ComputePropertyAccessInfo(
-        map, name.object(), mode));
+    PropertyAccessInfo info =
+        ProcessMapForNamedPropertyAccess(map_ref, name, mode);
     access_infos.push_back(info);
 
     // TODO(turbofan): We want to take receiver hints into account as well,
     // not only the feedback maps.
+
     // For JSNativeContextSpecialization::InlinePropertySetterCall
     // and InlinePropertyGetterCall.
     if (info.IsAccessorConstant() && !info.constant().is_null()) {
       if (info.constant()->IsJSFunction()) {
+        JSFunctionRef function(broker(),
+                               Handle<JSFunction>::cast(info.constant()));
+
+        // For JSCallReducer::ReduceJSCall.
+        function.Serialize();
+
         // For JSCallReducer::ReduceCallApiFunction.
-        Handle<SharedFunctionInfo> sfi(
-            handle(Handle<JSFunction>::cast(info.constant())->shared(),
-                   broker()->isolate()));
+        Handle<SharedFunctionInfo> sfi = function.shared().object();
         if (sfi->IsApiFunction()) {
           FunctionTemplateInfoRef fti_ref(
               broker(), handle(sfi->get_api_func_data(), broker()->isolate()));
-          fti_ref.SerializeCallCode();
+          if (fti_ref.has_call_code()) fti_ref.SerializeCallCode();
           ProcessReceiverMapForApiCall(fti_ref, map);
         }
+      } else if (info.constant()->IsJSBoundFunction()) {
+        JSBoundFunctionRef function(
+            broker(), Handle<JSBoundFunction>::cast(info.constant()));
+
+        // For JSCallReducer::ReduceJSCall.
+        function.Serialize();
       } else {
         FunctionTemplateInfoRef fti_ref(
             broker(), Handle<FunctionTemplateInfo>::cast(info.constant()));
-        fti_ref.SerializeCallCode();
+        if (fti_ref.has_call_code()) fti_ref.SerializeCallCode();
       }
     }
   }
@@ -1523,7 +2282,6 @@ void SerializerForBackgroundCompilation::ProcessKeyedPropertyAccess(
     Hints const& receiver, Hints const& key, FeedbackSlot slot,
     AccessMode mode) {
   if (BailoutOnUninitialized(slot)) return;
-  ProcessFeedbackForPropertyAccess(slot, mode, base::nullopt);
 
   for (Handle<Object> hint : receiver.constants()) {
     ObjectRef receiver_ref(broker(), hint);
@@ -1533,19 +2291,21 @@ void SerializerForBackgroundCompilation::ProcessKeyedPropertyAccess(
       receiver_ref.AsJSTypedArray().Serialize();
     }
 
-    // For JSNativeContextSpecialization::ReduceKeyedLoadFromHeapConstant.
+    // For JSNativeContextSpecialization::ReduceElementLoadFromHeapConstant.
     if (mode == AccessMode::kLoad || mode == AccessMode::kHas) {
       for (Handle<Object> hint : key.constants()) {
         ObjectRef key_ref(broker(), hint);
         // TODO(neis): Do this for integer-HeapNumbers too?
         if (key_ref.IsSmi() && key_ref.AsSmi() >= 0) {
           base::Optional<ObjectRef> element =
-              receiver_ref.GetOwnConstantElement(key_ref.AsSmi(), true);
+              receiver_ref.GetOwnConstantElement(
+                  key_ref.AsSmi(), SerializationPolicy::kSerializeIfNeeded);
           if (!element.has_value() && receiver_ref.IsJSArray()) {
             // We didn't find a constant element, but if the receiver is a
             // cow-array we can exploit the fact that any future write to the
             // element will replace the whole elements storage.
-            receiver_ref.AsJSArray().GetOwnCowElement(key_ref.AsSmi(), true);
+            receiver_ref.AsJSArray().GetOwnCowElement(
+                key_ref.AsSmi(), SerializationPolicy::kSerializeIfNeeded);
           }
         }
       }
@@ -1553,15 +2313,73 @@ void SerializerForBackgroundCompilation::ProcessKeyedPropertyAccess(
   }
 
   environment()->accumulator_hints().Clear();
+
+  ProcessFeedbackForPropertyAccess(slot, mode, base::nullopt);
 }
 
-void SerializerForBackgroundCompilation::ProcessMapForNamedPropertyAccess(
-    MapRef const& map, NameRef const& name) {
+PropertyAccessInfo
+SerializerForBackgroundCompilation::ProcessMapForNamedPropertyAccess(
+    MapRef const& receiver_map, NameRef const& name, AccessMode mode,
+    base::Optional<JSObjectRef> receiver) {
   // For JSNativeContextSpecialization::ReduceNamedAccess.
-  if (map.IsMapOfCurrentGlobalProxy()) {
-    broker()->native_context().global_proxy_object().GetPropertyCell(name,
-                                                                     true);
+  if (receiver_map.IsMapOfCurrentGlobalProxy()) {
+    broker()->native_context().global_proxy_object().GetPropertyCell(
+        name, SerializationPolicy::kSerializeIfNeeded);
   }
+
+  AccessInfoFactory access_info_factory(broker(), dependencies(),
+                                        broker()->zone());
+  PropertyAccessInfo access_info(access_info_factory.ComputePropertyAccessInfo(
+      receiver_map.object(), name.object(), mode));
+
+  // For JSNativeContextSpecialization::InlinePropertySetterCall
+  // and InlinePropertyGetterCall.
+  if (access_info.IsAccessorConstant() && !access_info.constant().is_null()) {
+    if (access_info.constant()->IsJSFunction()) {
+      // For JSCallReducer::ReduceCallApiFunction.
+      Handle<SharedFunctionInfo> sfi(
+          handle(Handle<JSFunction>::cast(access_info.constant())->shared(),
+                 broker()->isolate()));
+      if (sfi->IsApiFunction()) {
+        FunctionTemplateInfoRef fti_ref(
+            broker(), handle(sfi->get_api_func_data(), broker()->isolate()));
+        if (fti_ref.has_call_code()) fti_ref.SerializeCallCode();
+        ProcessReceiverMapForApiCall(fti_ref, receiver_map.object());
+      }
+    } else {
+      FunctionTemplateInfoRef fti_ref(
+          broker(), Handle<FunctionTemplateInfo>::cast(access_info.constant()));
+      if (fti_ref.has_call_code()) fti_ref.SerializeCallCode();
+    }
+  }
+
+  // For PropertyAccessBuilder::TryBuildLoadConstantDataField
+  if (mode == AccessMode::kLoad) {
+    broker()->StorePropertyAccessInfoForLoad(receiver_map, name, access_info);
+
+    if (access_info.IsDataConstant()) {
+      base::Optional<JSObjectRef> holder;
+      Handle<JSObject> prototype;
+      if (access_info.holder().ToHandle(&prototype)) {
+        holder = JSObjectRef(broker(), prototype);
+      } else {
+        CHECK_IMPLIES(receiver.has_value(),
+                      receiver->map().equals(receiver_map));
+        holder = receiver;
+      }
+
+      if (holder.has_value()) {
+        base::Optional<ObjectRef> constant(holder->GetOwnDataProperty(
+            access_info.field_representation(), access_info.field_index(),
+            SerializationPolicy::kSerializeIfNeeded));
+        if (constant.has_value()) {
+          environment()->accumulator_hints().AddConstant(constant->object());
+        }
+      }
+    }
+  }
+
+  return access_info;
 }
 
 void SerializerForBackgroundCompilation::VisitLdaKeyedProperty(
@@ -1577,21 +2395,20 @@ void SerializerForBackgroundCompilation::ProcessNamedPropertyAccess(
     Hints const& receiver, NameRef const& name, FeedbackSlot slot,
     AccessMode mode) {
   if (BailoutOnUninitialized(slot)) return;
-  ProcessFeedbackForPropertyAccess(slot, mode, name);
-
-  for (Handle<Map> map :
-       GetRelevantReceiverMaps(broker()->isolate(), receiver.maps())) {
-    ProcessMapForNamedPropertyAccess(MapRef(broker(), map), name);
-  }
 
   JSGlobalProxyRef global_proxy =
       broker()->native_context().global_proxy_object();
 
   for (Handle<Object> hint : receiver.constants()) {
     ObjectRef object(broker(), hint);
+    if (mode == AccessMode::kLoad && object.IsJSObject()) {
+      ProcessMapForNamedPropertyAccess(object.AsJSObject().map(), name, mode,
+                                       object.AsJSObject());
+    }
     // For JSNativeContextSpecialization::ReduceNamedAccessFromNexus.
     if (object.equals(global_proxy)) {
-      global_proxy.GetPropertyCell(name, true);
+      global_proxy.GetPropertyCell(name,
+                                   SerializationPolicy::kSerializeIfNeeded);
     }
     // For JSNativeContextSpecialization::ReduceJSLoadNamed.
     if (mode == AccessMode::kLoad && object.IsJSFunction() &&
@@ -1601,7 +2418,15 @@ void SerializerForBackgroundCompilation::ProcessNamedPropertyAccess(
     }
   }
 
+  DCHECK_NE(&environment()->accumulator_hints(), &receiver);
   environment()->accumulator_hints().Clear();
+
+  ProcessFeedbackForPropertyAccess(slot, mode, name);
+
+  for (Handle<Map> map :
+       GetRelevantReceiverMaps(broker()->isolate(), receiver.maps())) {
+    ProcessMapForNamedPropertyAccess(MapRef(broker(), map), name, mode);
+  }
 }
 
 void SerializerForBackgroundCompilation::ProcessNamedPropertyAccess(
@@ -1636,6 +2461,103 @@ void SerializerForBackgroundCompilation::VisitTestIn(
       environment()->register_hints(iterator->GetRegisterOperand(0));
   FeedbackSlot slot = iterator->GetSlotOperand(1);
   ProcessKeyedPropertyAccess(receiver, key, slot, AccessMode::kHas);
+}
+
+// For JSNativeContextSpecialization::ReduceJSOrdinaryHasInstance.
+void SerializerForBackgroundCompilation::ProcessConstantForOrdinaryHasInstance(
+    HeapObjectRef const& constructor, bool* walk_prototypes) {
+  if (constructor.IsJSBoundFunction()) {
+    constructor.AsJSBoundFunction().Serialize();
+    ProcessConstantForInstanceOf(
+        constructor.AsJSBoundFunction().bound_target_function(),
+        walk_prototypes);
+  } else if (constructor.IsJSFunction()) {
+    constructor.AsJSFunction().Serialize();
+    *walk_prototypes =
+        *walk_prototypes ||
+        (constructor.map().has_prototype_slot() &&
+         constructor.AsJSFunction().has_prototype() &&
+         !constructor.AsJSFunction().PrototypeRequiresRuntimeLookup());
+  }
+}
+
+void SerializerForBackgroundCompilation::ProcessConstantForInstanceOf(
+    ObjectRef const& constructor, bool* walk_prototypes) {
+  if (!constructor.IsHeapObject()) return;
+  HeapObjectRef constructor_heap_object = constructor.AsHeapObject();
+
+  PropertyAccessInfo const& access_info =
+      broker()->CreateAccessInfoForLoadingHasInstance(
+          constructor_heap_object.map(), dependencies());
+
+  if (access_info.IsNotFound()) {
+    ProcessConstantForOrdinaryHasInstance(constructor_heap_object,
+                                          walk_prototypes);
+  } else if (access_info.IsDataConstant()) {
+    Handle<JSObject> holder;
+    bool found_on_proto = access_info.holder().ToHandle(&holder);
+    JSObjectRef holder_ref = found_on_proto ? JSObjectRef(broker(), holder)
+                                            : constructor.AsJSObject();
+    base::Optional<ObjectRef> constant = holder_ref.GetOwnDataProperty(
+        access_info.field_representation(), access_info.field_index(),
+        SerializationPolicy::kSerializeIfNeeded);
+    CHECK(constant.has_value());
+    if (constant->IsJSFunction()) {
+      JSFunctionRef function = constant->AsJSFunction();
+      function.Serialize();
+      if (function.shared().HasBuiltinId() &&
+          function.shared().builtin_id() ==
+              Builtins::kFunctionPrototypeHasInstance) {
+        // For JSCallReducer::ReduceFunctionPrototypeHasInstance.
+        ProcessConstantForOrdinaryHasInstance(constructor_heap_object,
+                                              walk_prototypes);
+      }
+    }
+  }
+}
+
+void SerializerForBackgroundCompilation::VisitTestInstanceOf(
+    BytecodeArrayIterator* iterator) {
+  Hints const& lhs =
+      environment()->register_hints(iterator->GetRegisterOperand(0));
+  Hints& rhs = environment()->accumulator_hints();
+  FeedbackSlot slot = iterator->GetSlotOperand(1);
+  if (BailoutOnUninitialized(slot)) return;
+
+  // Incorporate feedback (about the rhs of the operator) into hints.
+  {
+    Handle<FeedbackVector> feedback_vector =
+        environment()->function().feedback_vector();
+    FeedbackSource source(feedback_vector, slot);
+    ProcessedFeedback const* feedback =
+        broker()->ProcessFeedbackForInstanceOf(source);
+    if (!feedback->IsInsufficient()) {
+      InstanceOfFeedback const* rhs_feedback = feedback->AsInstanceOf();
+      if (rhs_feedback->value().has_value()) {
+        Handle<JSObject> constructor = rhs_feedback->value()->object();
+        rhs.AddConstant(constructor);
+      }
+    }
+  }
+
+  bool walk_prototypes = false;
+  for (Handle<Object> constant : rhs.constants()) {
+    ProcessConstantForInstanceOf(ObjectRef(broker(), constant),
+                                 &walk_prototypes);
+  }
+  if (walk_prototypes) ProcessHintsForHasInPrototypeChain(lhs);
+}
+
+void SerializerForBackgroundCompilation::VisitToNumeric(
+    BytecodeArrayIterator* iterator) {
+  FeedbackSlot slot = iterator->GetSlotOperand(0);
+  ProcessFeedbackForUnaryOrBinaryOperation(slot, false);
+}
+
+void SerializerForBackgroundCompilation::VisitToNumber(
+    BytecodeArrayIterator* iterator) {
+  FeedbackSlot slot = iterator->GetSlotOperand(0);
+  ProcessFeedbackForUnaryOrBinaryOperation(slot, false);
 }
 
 void SerializerForBackgroundCompilation::VisitStaKeyedProperty(
@@ -1712,6 +2634,45 @@ UNREACHABLE_BYTECODE_LIST(DEFINE_UNREACHABLE)
   }
 KILL_ENVIRONMENT_LIST(DEFINE_KILL)
 #undef DEFINE_KILL
+
+#define DEFINE_BINARY_OP(name, ...)                       \
+  void SerializerForBackgroundCompilation::Visit##name(   \
+      BytecodeArrayIterator* iterator) {                  \
+    FeedbackSlot slot = iterator->GetSlotOperand(1);      \
+    ProcessFeedbackForUnaryOrBinaryOperation(slot, true); \
+  }
+BINARY_OP_LIST(DEFINE_BINARY_OP)
+#undef DEFINE_BINARY_OP
+
+#define DEFINE_COMPARE_OP(name, ...)                    \
+  void SerializerForBackgroundCompilation::Visit##name( \
+      BytecodeArrayIterator* iterator) {                \
+    FeedbackSlot slot = iterator->GetSlotOperand(1);    \
+    ProcessFeedbackForCompareOperation(slot);           \
+  }
+COMPARE_OP_LIST(DEFINE_COMPARE_OP)
+#undef DEFINE_COMPARE_OP
+
+#define DEFINE_UNARY_OP(name, ...)                        \
+  void SerializerForBackgroundCompilation::Visit##name(   \
+      BytecodeArrayIterator* iterator) {                  \
+    FeedbackSlot slot = iterator->GetSlotOperand(0);      \
+    ProcessFeedbackForUnaryOrBinaryOperation(slot, true); \
+  }
+UNARY_OP_LIST(DEFINE_UNARY_OP)
+#undef DEFINE_UNARY_OP
+
+#undef BINARY_OP_LIST
+#undef CLEAR_ACCUMULATOR_LIST
+#undef CLEAR_ENVIRONMENT_LIST
+#undef COMPARE_OP_LIST
+#undef CONDITIONAL_JUMPS_LIST
+#undef IGNORED_BYTECODE_LIST
+#undef KILL_ENVIRONMENT_LIST
+#undef SUPPORTED_BYTECODE_LIST
+#undef UNARY_OP_LIST
+#undef UNCONDITIONAL_JUMPS_LIST
+#undef UNREACHABLE_BYTECODE_LIST
 
 }  // namespace compiler
 }  // namespace internal

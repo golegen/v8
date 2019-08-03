@@ -12,6 +12,7 @@
 
 #include <memory>
 
+#include "src/base/optional.h"
 #include "src/common/message-template.h"
 #include "src/handles/handles.h"
 
@@ -146,6 +147,7 @@ class JSStackFrame : public StackFrameBase {
   Handle<JSFunction> function_;
   Handle<AbstractCode> code_;
   int offset_;
+  mutable base::Optional<int> cached_position_;
 
   bool is_async_ : 1;
   bool is_constructor_ : 1;
@@ -259,10 +261,13 @@ enum FrameSkipMode {
 
 class ErrorUtils : public AllStatic {
  public:
+  // |kNone| is useful when you don't need the stack information at all, for
+  // example when creating a deserialized error.
+  enum class StackTraceCollection { kDetailed, kSimple, kNone };
   static MaybeHandle<Object> Construct(
       Isolate* isolate, Handle<JSFunction> target, Handle<Object> new_target,
       Handle<Object> message, FrameSkipMode mode, Handle<Object> caller,
-      bool suppress_detailed_trace);
+      StackTraceCollection stack_trace_collection);
 
   static MaybeHandle<String> ToString(Isolate* isolate, Handle<Object> recv);
 

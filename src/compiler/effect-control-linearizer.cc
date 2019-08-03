@@ -17,6 +17,7 @@
 #include "src/compiler/node-properties.h"
 #include "src/compiler/node.h"
 #include "src/compiler/schedule.h"
+#include "src/execution/frames.h"
 #include "src/heap/factory-inl.h"
 #include "src/objects/heap-number.h"
 #include "src/objects/oddball.h"
@@ -51,6 +52,7 @@ class EffectControlLinearizer {
   bool TryWireInStateEffect(Node* node, Node* frame_state, Node** effect,
                             Node** control);
   Node* LowerChangeBitToTagged(Node* node);
+  Node* LowerChangeInt31ToCompressedSigned(Node* node);
   Node* LowerChangeInt31ToTaggedSigned(Node* node);
   Node* LowerChangeInt32ToTagged(Node* node);
   Node* LowerChangeInt64ToTagged(Node* node);
@@ -58,6 +60,7 @@ class EffectControlLinearizer {
   Node* LowerChangeUint64ToTagged(Node* node);
   Node* LowerChangeFloat64ToTagged(Node* node);
   Node* LowerChangeFloat64ToTaggedPointer(Node* node);
+  Node* LowerChangeCompressedSignedToInt32(Node* node);
   Node* LowerChangeTaggedSignedToInt32(Node* node);
   Node* LowerChangeTaggedSignedToInt64(Node* node);
   Node* LowerChangeTaggedToBit(Node* node);
@@ -85,6 +88,7 @@ class EffectControlLinearizer {
   Node* LowerCheckedUint32Div(Node* node, Node* frame_state);
   Node* LowerCheckedUint32Mod(Node* node, Node* frame_state);
   Node* LowerCheckedInt32Mul(Node* node, Node* frame_state);
+  Node* LowerCheckedInt32ToCompressedSigned(Node* node, Node* frame_state);
   Node* LowerCheckedInt32ToTaggedSigned(Node* node, Node* frame_state);
   Node* LowerCheckedInt64ToInt32(Node* node, Node* frame_state);
   Node* LowerCheckedInt64ToTaggedSigned(Node* node, Node* frame_state);
@@ -166,7 +170,8 @@ class EffectControlLinearizer {
   Node* LowerStringEqual(Node* node);
   Node* LowerStringLessThan(Node* node);
   Node* LowerStringLessThanOrEqual(Node* node);
-  Node* LowerSpeculativeBigIntAdd(Node* node, Node* frame_state);
+  Node* LowerBigIntAdd(Node* node, Node* frame_state);
+  Node* LowerBigIntNegate(Node* node);
   Node* LowerCheckFloat64Hole(Node* node, Node* frame_state);
   Node* LowerCheckNotTaggedHole(Node* node, Node* frame_state);
   Node* LowerConvertTaggedHoleToUndefined(Node* node);
@@ -192,6 +197,7 @@ class EffectControlLinearizer {
   void LowerTransitionAndStoreNumberElement(Node* node);
   void LowerTransitionAndStoreNonNumberElement(Node* node);
   void LowerRuntimeAbort(Node* node);
+  Node* LowerAssertType(Node* node);
   Node* LowerConvertReceiver(Node* node);
   Node* LowerDateNow(Node* node);
 
@@ -220,6 +226,7 @@ class EffectControlLinearizer {
   Node* LowerStringComparison(Callable const& callable, Node* node);
   Node* IsElementsKindGreaterThan(Node* kind, ElementsKind reference_kind);
 
+  Node* ChangeInt32ToCompressedSmi(Node* value);
   Node* ChangeInt32ToSmi(Node* value);
   Node* ChangeInt32ToIntPtr(Node* value);
   Node* ChangeInt64ToSmi(Node* value);
@@ -228,9 +235,11 @@ class EffectControlLinearizer {
   Node* ChangeUint32ToUintPtr(Node* value);
   Node* ChangeUint32ToSmi(Node* value);
   Node* ChangeSmiToIntPtr(Node* value);
+  Node* ChangeCompressedSmiToInt32(Node* value);
   Node* ChangeSmiToInt32(Node* value);
   Node* ChangeSmiToInt64(Node* value);
   Node* ObjectIsSmi(Node* value);
+  Node* CompressedObjectIsSmi(Node* value);
   Node* LoadFromSeqString(Node* receiver, Node* position, Node* is_one_byte);
 
   Node* SmiMaxValueConstant();
@@ -833,6 +842,9 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
     case IrOpcode::kChangeBitToTagged:
       result = LowerChangeBitToTagged(node);
       break;
+    case IrOpcode::kChangeInt31ToCompressedSigned:
+      result = LowerChangeInt31ToCompressedSigned(node);
+      break;
     case IrOpcode::kChangeInt31ToTaggedSigned:
       result = LowerChangeInt31ToTaggedSigned(node);
       break;
@@ -853,6 +865,9 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
       break;
     case IrOpcode::kChangeFloat64ToTaggedPointer:
       result = LowerChangeFloat64ToTaggedPointer(node);
+      break;
+    case IrOpcode::kChangeCompressedSignedToInt32:
+      result = LowerChangeCompressedSignedToInt32(node);
       break;
     case IrOpcode::kChangeTaggedSignedToInt32:
       result = LowerChangeTaggedSignedToInt32(node);
@@ -946,6 +961,9 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
       break;
     case IrOpcode::kCheckedInt32Mul:
       result = LowerCheckedInt32Mul(node, frame_state);
+      break;
+    case IrOpcode::kCheckedInt32ToCompressedSigned:
+      result = LowerCheckedInt32ToCompressedSigned(node, frame_state);
       break;
     case IrOpcode::kCheckedInt32ToTaggedSigned:
       result = LowerCheckedInt32ToTaggedSigned(node, frame_state);
@@ -1161,8 +1179,11 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
     case IrOpcode::kStringLessThanOrEqual:
       result = LowerStringLessThanOrEqual(node);
       break;
-    case IrOpcode::kSpeculativeBigIntAdd:
-      result = LowerSpeculativeBigIntAdd(node, frame_state);
+    case IrOpcode::kBigIntAdd:
+      result = LowerBigIntAdd(node, frame_state);
+      break;
+    case IrOpcode::kBigIntNegate:
+      result = LowerBigIntNegate(node);
       break;
     case IrOpcode::kNumberIsFloat64Hole:
       result = LowerNumberIsFloat64Hole(node);
@@ -1256,6 +1277,9 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
       break;
     case IrOpcode::kRuntimeAbort:
       LowerRuntimeAbort(node);
+      break;
+    case IrOpcode::kAssertType:
+      result = LowerAssertType(node);
       break;
     case IrOpcode::kConvertReceiver:
       result = LowerConvertReceiver(node);
@@ -1381,6 +1405,11 @@ Node* EffectControlLinearizer::LowerChangeBitToTagged(Node* node) {
   return done.PhiAt(0);
 }
 
+Node* EffectControlLinearizer::LowerChangeInt31ToCompressedSigned(Node* node) {
+  Node* value = node->InputAt(0);
+  return ChangeInt32ToCompressedSmi(value);
+}
+
 Node* EffectControlLinearizer::LowerChangeInt31ToTaggedSigned(Node* node) {
   Node* value = node->InputAt(0);
   return ChangeInt32ToSmi(value);
@@ -1483,6 +1512,11 @@ Node* EffectControlLinearizer::LowerChangeUint64ToTagged(Node* node) {
 Node* EffectControlLinearizer::LowerChangeTaggedSignedToInt32(Node* node) {
   Node* value = node->InputAt(0);
   return ChangeSmiToInt32(value);
+}
+
+Node* EffectControlLinearizer::LowerChangeCompressedSignedToInt32(Node* node) {
+  Node* value = node->InputAt(0);
+  return ChangeCompressedSmiToInt32(value);
 }
 
 Node* EffectControlLinearizer::LowerChangeTaggedSignedToInt64(Node* node) {
@@ -1678,7 +1712,7 @@ Node* EffectControlLinearizer::LowerChangeCompressedToTaggedSigned(Node* node) {
   auto if_not_smi = __ MakeDeferredLabel();
   auto done = __ MakeLabel(MachineRepresentation::kWord32);
 
-  Node* check = ObjectIsSmi(value);
+  Node* check = CompressedObjectIsSmi(value);
   __ GotoIfNot(check, &if_not_smi);
   __ Goto(&done, __ ChangeCompressedSignedToTaggedSigned(value));
 
@@ -1708,8 +1742,7 @@ Node* EffectControlLinearizer::LowerChangeTaggedToCompressedSigned(Node* node) {
   STATIC_ASSERT(HeapNumber::kValueOffset == Oddball::kToNumberRawOffset);
   Node* vfalse = __ LoadField(AccessBuilder::ForHeapNumberValue(), value);
   vfalse = __ ChangeFloat64ToInt32(vfalse);
-  vfalse = ChangeInt32ToSmi(vfalse);
-  vfalse = __ ChangeTaggedSignedToCompressedSigned(vfalse);
+  vfalse = ChangeInt32ToCompressedSmi(vfalse);
   __ Goto(&done, vfalse);
 
   __ Bind(&done);
@@ -1779,7 +1812,7 @@ void EffectControlLinearizer::LowerCheckMaps(Node* node, Node* frame_state) {
       // If map is not deprecated the migration attempt does not make sense.
       Node* bitfield3 =
           __ LoadField(AccessBuilder::ForMapBitField3(), value_map);
-      Node* if_not_deprecated = __ WordEqual(
+      Node* if_not_deprecated = __ Word32Equal(
           __ Word32And(bitfield3,
                        __ Int32Constant(Map::IsDeprecatedBit::kMask)),
           __ Int32Constant(0));
@@ -2307,6 +2340,19 @@ Node* EffectControlLinearizer::LowerCheckedInt32Mul(Node* node,
   return value;
 }
 
+Node* EffectControlLinearizer::LowerCheckedInt32ToCompressedSigned(
+    Node* node, Node* frame_state) {
+  DCHECK(SmiValuesAre31Bits());
+  Node* value = node->InputAt(0);
+  const CheckParameters& params = CheckParametersOf(node->op());
+
+  Node* add = __ Int32AddWithOverflow(value, value);
+  Node* check = __ Projection(1, add);
+  __ DeoptimizeIf(DeoptimizeReason::kLostPrecision, params.feedback(), check,
+                  frame_state);
+  return __ Projection(0, add);
+}
+
 Node* EffectControlLinearizer::LowerCheckedInt32ToTaggedSigned(
     Node* node, Node* frame_state) {
   DCHECK(SmiValuesAre31Bits());
@@ -2730,6 +2776,11 @@ Node* EffectControlLinearizer::LowerChangeUint64ToBigInt(Node* node) {
     __ StoreField(AccessBuilder::ForMap(), result, map);
     __ StoreField(AccessBuilder::ForBigIntBitfield(), result,
                   __ IntPtrConstant(bitfield));
+    // BigInts have no padding on 64 bit architectures with pointer compression.
+    if (BigInt::HasOptionalPadding()) {
+      __ StoreField(AccessBuilder::ForBigIntOptionalPadding(), result,
+                    __ IntPtrConstant(0));
+    }
     __ StoreField(AccessBuilder::ForBigIntLeastSignificantDigit64(), result,
                   value);
     __ Goto(&done, result);
@@ -2743,6 +2794,11 @@ Node* EffectControlLinearizer::LowerChangeUint64ToBigInt(Node* node) {
     __ StoreField(AccessBuilder::ForMap(), result, map);
     __ StoreField(AccessBuilder::ForBigIntBitfield(), result,
                   __ IntPtrConstant(bitfield));
+    // BigInts have no padding on 64 bit architectures with pointer compression.
+    if (BigInt::HasOptionalPadding()) {
+      __ StoreField(AccessBuilder::ForBigIntOptionalPadding(), result,
+                    __ IntPtrConstant(0));
+    }
     __ Goto(&done, result);
   }
 
@@ -2785,7 +2841,7 @@ Node* EffectControlLinearizer::LowerCheckedCompressedToTaggedSigned(
   Node* value = node->InputAt(0);
   const CheckParameters& params = CheckParametersOf(node->op());
 
-  Node* check = ObjectIsSmi(value);
+  Node* check = CompressedObjectIsSmi(value);
   __ DeoptimizeIfNot(DeoptimizeReason::kNotASmi, params.feedback(), check,
                      frame_state);
 
@@ -2797,7 +2853,7 @@ Node* EffectControlLinearizer::LowerCheckedCompressedToTaggedPointer(
   Node* value = node->InputAt(0);
   const CheckParameters& params = CheckParametersOf(node->op());
 
-  Node* check = ObjectIsSmi(value);
+  Node* check = CompressedObjectIsSmi(value);
   __ DeoptimizeIf(DeoptimizeReason::kSmi, params.feedback(), check,
                   frame_state);
   return __ ChangeCompressedPointerToTaggedPointer(value);
@@ -4215,9 +4271,7 @@ Node* EffectControlLinearizer::LowerStringLessThanOrEqual(Node* node) {
       Builtins::CallableFor(isolate(), Builtins::kStringLessThanOrEqual), node);
 }
 
-Node* EffectControlLinearizer::LowerSpeculativeBigIntAdd(Node* node,
-                                                         Node* frame_state) {
-  const auto& p = BigIntOperationParametersOf(node->op());
+Node* EffectControlLinearizer::LowerBigIntAdd(Node* node, Node* frame_state) {
   Node* lhs = node->InputAt(0);
   Node* rhs = node->InputAt(1);
 
@@ -4232,8 +4286,22 @@ Node* EffectControlLinearizer::LowerSpeculativeBigIntAdd(Node* node,
               rhs, __ NoContextConstant());
 
   // Check for exception sentinel: Smi is returned to signal BigIntTooBig.
-  __ DeoptimizeIf(DeoptimizeReason::kBigIntTooBig, p.feedback(),
+  __ DeoptimizeIf(DeoptimizeReason::kBigIntTooBig, VectorSlotPair{},
                   ObjectIsSmi(value), frame_state);
+
+  return value;
+}
+
+Node* EffectControlLinearizer::LowerBigIntNegate(Node* node) {
+  Callable const callable =
+      Builtins::CallableFor(isolate(), Builtins::kBigIntUnaryMinus);
+  auto call_descriptor = Linkage::GetStubCallDescriptor(
+      graph()->zone(), callable.descriptor(),
+      callable.descriptor().GetStackParameterCount(), CallDescriptor::kNoFlags,
+      Operator::kFoldable | Operator::kNoThrow);
+  Node* value =
+      __ Call(call_descriptor, jsgraph()->HeapConstant(callable.code()),
+              node->InputAt(0), __ NoContextConstant());
 
   return value;
 }
@@ -4411,6 +4479,11 @@ Node* EffectControlLinearizer::ChangeIntPtrToInt32(Node* value) {
   return value;
 }
 
+Node* EffectControlLinearizer::ChangeInt32ToCompressedSmi(Node* value) {
+  CHECK(machine()->Is64() && SmiValuesAre31Bits());
+  return __ Word32Shl(value, SmiShiftBitsConstant());
+}
+
 Node* EffectControlLinearizer::ChangeInt32ToSmi(Node* value) {
   // Do shift on 32bit values if Smis are stored in the lower word.
   if (machine()->Is64() && SmiValuesAre31Bits()) {
@@ -4460,6 +4533,11 @@ Node* EffectControlLinearizer::ChangeSmiToInt32(Node* value) {
   return ChangeSmiToIntPtr(value);
 }
 
+Node* EffectControlLinearizer::ChangeCompressedSmiToInt32(Node* value) {
+  CHECK(machine()->Is64() && SmiValuesAre31Bits());
+  return __ Word32Sar(value, SmiShiftBitsConstant());
+}
+
 Node* EffectControlLinearizer::ChangeSmiToInt64(Node* value) {
   CHECK(machine()->Is64());
   return ChangeSmiToIntPtr(value);
@@ -4468,6 +4546,11 @@ Node* EffectControlLinearizer::ChangeSmiToInt64(Node* value) {
 Node* EffectControlLinearizer::ObjectIsSmi(Node* value) {
   return __ WordEqual(__ WordAnd(value, __ IntPtrConstant(kSmiTagMask)),
                       __ IntPtrConstant(kSmiTag));
+}
+
+Node* EffectControlLinearizer::CompressedObjectIsSmi(Node* value) {
+  return __ Word32Equal(__ Word32And(value, __ Int32Constant(kSmiTagMask)),
+                        __ Int32Constant(kSmiTag));
 }
 
 Node* EffectControlLinearizer::SmiMaxValueConstant() {
@@ -5318,6 +5401,30 @@ void EffectControlLinearizer::LowerRuntimeAbort(Node* node) {
           __ Int32Constant(1), __ NoContextConstant());
 }
 
+Node* EffectControlLinearizer::LowerAssertType(Node* node) {
+  DCHECK_EQ(node->opcode(), IrOpcode::kAssertType);
+  Type type = OpParameter<Type>(node->op());
+  DCHECK(type.IsRange());
+  auto range = type.AsRange();
+
+  Node* const input = node->InputAt(0);
+  Node* const min = __ NumberConstant(range->Min());
+  Node* const max = __ NumberConstant(range->Max());
+
+  {
+    Callable const callable =
+        Builtins::CallableFor(isolate(), Builtins::kCheckNumberInRange);
+    Operator::Properties const properties = node->op()->properties();
+    CallDescriptor::Flags const flags = CallDescriptor::kNoFlags;
+    auto call_descriptor = Linkage::GetStubCallDescriptor(
+        graph()->zone(), callable.descriptor(),
+        callable.descriptor().GetStackParameterCount(), flags, properties);
+    __ Call(call_descriptor, __ HeapConstant(callable.code()), input, min, max,
+            __ NoContextConstant());
+    return input;
+  }
+}
+
 Node* EffectControlLinearizer::LowerConvertReceiver(Node* node) {
   ConvertReceiverMode const mode = ConvertReceiverModeOf(node->op());
   Node* value = node->InputAt(0);
@@ -5805,7 +5912,11 @@ Node* EffectControlLinearizer::LowerFindOrderedHashMapEntryForInt32Key(
     auto if_match = __ MakeLabel();
     auto if_notmatch = __ MakeLabel();
     auto if_notsmi = __ MakeDeferredLabel();
-    __ GotoIfNot(ObjectIsSmi(candidate_key), &if_notsmi);
+    if (COMPRESS_POINTERS_BOOL) {
+      __ GotoIfNot(CompressedObjectIsSmi(candidate_key), &if_notsmi);
+    } else {
+      __ GotoIfNot(ObjectIsSmi(candidate_key), &if_notsmi);
+    }
     __ Branch(__ Word32Equal(ChangeSmiToInt32(candidate_key), key), &if_match,
               &if_notmatch);
 

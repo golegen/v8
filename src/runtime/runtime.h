@@ -203,7 +203,7 @@ namespace internal {
 #define FOR_EACH_INTRINSIC_INTERNAL(F, I)            \
   F(AccessCheck, 1, 1)                               \
   F(AllocateByteArray, 1, 1)                         \
-  F(AllocateInYoungGeneration, 1, 1)                 \
+  F(AllocateInYoungGeneration, 2, 1)                 \
   F(AllocateInOldGeneration, 2, 1)                   \
   F(AllocateSeqOneByteString, 1, 1)                  \
   F(AllocateSeqTwoByteString, 1, 1)                  \
@@ -247,8 +247,7 @@ namespace internal {
   F(ThrowTypeError, -1 /* >= 1 */, 1)                \
   F(ThrowTypeErrorIfStrict, -1 /* >= 1 */, 1)        \
   F(Typeof, 1, 1)                                    \
-  F(UnwindAndFindExceptionHandler, 0, 1)             \
-  F(FinalizationGroupCleanupJob, 1, 1)
+  F(UnwindAndFindExceptionHandler, 0, 1)
 
 #define FOR_EACH_INTRINSIC_LITERALS(F, I)           \
   F(CreateArrayLiteral, 4, 1)                       \
@@ -362,6 +361,7 @@ namespace internal {
 #define FOR_EACH_INTRINSIC_PROXY(F, I) \
   F(CheckProxyGetSetTrapResult, 2, 1)  \
   F(CheckProxyHasTrapResult, 2, 1)     \
+  F(CheckProxyDeleteTrapResult, 2, 1)  \
   F(GetPropertyWithReceiver, 3, 1)     \
   F(SetPropertyWithReceiver, 4, 1)
 
@@ -434,6 +434,7 @@ namespace internal {
 #define FOR_EACH_INTRINSIC_TEST(F, I)         \
   F(Abort, 1, 1)                              \
   F(AbortJS, 1, 1)                            \
+  F(AbortCSAAssert, 1, 1)                     \
   F(ArraySpeciesProtector, 0, 1)              \
   F(ClearFunctionFeedback, 1, 1)              \
   F(ClearMegamorphicStubCache, 0, 1)          \
@@ -548,7 +549,7 @@ namespace internal {
   F(WasmTableCopy, 5, 1)              \
   F(WasmTableGrow, 3, 1)              \
   F(WasmTableFill, 4, 1)              \
-  F(WasmIsValidAnyFuncValue, 1, 1)    \
+  F(WasmIsValidFuncRefValue, 1, 1)    \
   F(WasmCompileLazy, 2, 1)
 
 #define FOR_EACH_INTRINSIC_RETURN_PAIR_IMPL(F, I) \
@@ -767,9 +768,11 @@ V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream&, Runtime::FunctionId);
 //---------------------------------------------------------------------------
 // Constants used by interface to runtime functions.
 
-class AllocateDoubleAlignFlag : public BitField<bool, 0, 1> {};
+using AllocateDoubleAlignFlag = BitField<bool, 0, 1>;
 
-class DeclareGlobalsEvalFlag : public BitField<bool, 0, 1> {};
+using AllowLargeObjectAllocationFlag = BitField<bool, 1, 1>;
+
+using DeclareGlobalsEvalFlag = BitField<bool, 0, 1>;
 
 // A set of bits returned by Runtime_GetOptimizationStatus.
 // These bits must be in sync with bits defined in test/mjsunit/mjsunit.js

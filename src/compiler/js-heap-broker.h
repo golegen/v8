@@ -9,6 +9,7 @@
 #include "src/base/optional.h"
 #include "src/common/globals.h"
 #include "src/compiler/access-info.h"
+#include "src/compiler/processed-feedback.h"
 #include "src/compiler/refs-map.h"
 #include "src/handles/handles.h"
 #include "src/interpreter/bytecode-array-accessor.h"
@@ -22,12 +23,13 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
+class BytecodeAnalysis;
 class ObjectRef;
 std::ostream& operator<<(std::ostream& os, const ObjectRef& ref);
 
 struct FeedbackSource {
-  FeedbackSource(Handle<FeedbackVector> vector_, FeedbackSlot slot_)
-      : vector(vector_), slot(slot_) {}
+  FeedbackSource(Handle<FeedbackVector> vector_, FeedbackSlot slot_);
+  FeedbackSource(FeedbackVectorRef vector_, FeedbackSlot slot_);
   explicit FeedbackSource(FeedbackNexus const& nexus);
   explicit FeedbackSource(VectorSlotPair const& pair);
 
@@ -59,6 +61,24 @@ struct FeedbackSource {
     if (broker->tracing_enabled())                                  \
       broker->Trace() << __FUNCTION__ << ": missing " << x << '\n'; \
   } while (false)
+
+struct MapNameRefPair {
+  MapRef map;
+  NameRef name;
+
+  struct Hash {
+    size_t operator()(const MapNameRefPair& pair) const {
+      return base::hash_combine(pair.map.object().address(),
+                                pair.name.object().address());
+    }
+  };
+  struct Equal {
+    bool operator()(const MapNameRefPair& lhs,
+                    const MapNameRefPair& rhs) const {
+      return lhs.map.equals(rhs.map) && lhs.name.equals(rhs.name);
+    }
+  };
+};
 
 class V8_EXPORT_PRIVATE JSHeapBroker {
  public:
@@ -107,14 +127,48 @@ class V8_EXPORT_PRIVATE JSHeapBroker {
       MapHandles const& maps, KeyedAccessMode const& keyed_mode);
   GlobalAccessFeedback const* ProcessFeedbackForGlobalAccess(
       FeedbackSource const& source);
+  BytecodeAnalysis const& GetBytecodeAnalysis(
+      Handle<BytecodeArray> bytecode_array, BailoutId osr_offset,
+      bool analyze_liveness,
+      SerializationPolicy policy = SerializationPolicy::kAssumeSerialized);
+
+  // Binary, comparison and for-in hints can be fully expressed via
+  // an enum. Insufficient feedback is signaled by <Hint enum>::kNone.
+  BinaryOperationHint GetFeedbackForBinaryOperation(
+      FeedbackSource const& source) const;
+  CompareOperationHint GetFeedbackForCompareOperation(
+      FeedbackSource const& source) const;
+  ForInHint GetFeedbackForForIn(FeedbackSource const& source) const;
+
+  ProcessedFeedback const* GetFeedbackForCall(FeedbackSource const& source);
+  ProcessedFeedback const* GetFeedbackForInstanceOf(
+      FeedbackSource const& source);
+
+  void ProcessFeedbackForBinaryOperation(FeedbackSource const& source);
+  void ProcessFeedbackForCompareOperation(FeedbackSource const& source);
+  void ProcessFeedbackForForIn(FeedbackSource const& source);
+
+  ProcessedFeedback const* ProcessFeedbackForCall(FeedbackSource const& source);
+  ProcessedFeedback const* ProcessFeedbackForInstanceOf(
+      FeedbackSource const& source);
+
+  bool FeedbackIsInsufficient(FeedbackSource const& source) const;
 
   base::Optional<NameRef> GetNameFeedback(FeedbackNexus const& nexus);
 
   // If there is no result stored for {map}, we return an Invalid
   // PropertyAccessInfo.
+  PropertyAccessInfo GetAccessInfoForLoadingExec(MapRef map);
+  PropertyAccessInfo GetAccessInfoForLoadingHasInstance(MapRef map);
   PropertyAccessInfo GetAccessInfoForLoadingThen(MapRef map);
+  PropertyAccessInfo const& CreateAccessInfoForLoadingExec(
+      MapRef map, CompilationDependencies* dependencies);
+  PropertyAccessInfo const& CreateAccessInfoForLoadingHasInstance(
+      MapRef map, CompilationDependencies* dependencies);
   void CreateAccessInfoForLoadingThen(MapRef map,
                                       CompilationDependencies* dependencies);
+  void StorePropertyAccessInfoForLoad(MapRef map, NameRef name,
+                                      PropertyAccessInfo const& access_info);
 
   std::ostream& Trace();
   void IncrementTracingIndentation();
@@ -124,6 +178,17 @@ class V8_EXPORT_PRIVATE JSHeapBroker {
   friend class HeapObjectRef;
   friend class ObjectRef;
   friend class ObjectData;
+
+  // Bottleneck FeedbackNexus access here, for storage in the broker
+  // or on-the-fly usage elsewhere in the compiler.
+  ForInHint ReadForInFeedback(FeedbackSource const& source) const;
+  CompareOperationHint ReadCompareOperationFeedback(
+      FeedbackSource const& source) const;
+  BinaryOperationHint ReadBinaryOperationFeedback(
+      FeedbackSource const& source) const;
+
+  ProcessedFeedback const* ReadCallFeedback(FeedbackSource const& source);
+  ProcessedFeedback const* ReadInstanceOfFeedback(FeedbackSource const& source);
 
   void SerializeShareableObjects();
   void CollectArrayAndObjectPrototypes();
@@ -144,10 +209,16 @@ class V8_EXPORT_PRIVATE JSHeapBroker {
   ZoneUnorderedMap<FeedbackSource, ProcessedFeedback const*,
                    FeedbackSource::Hash, FeedbackSource::Equal>
       feedback_;
+  ZoneUnorderedMap<ObjectData*, BytecodeAnalysis*> bytecode_analyses_;
   typedef ZoneUnorderedMap<MapRef, PropertyAccessInfo, ObjectRef::Hash,
                            ObjectRef::Equal>
       MapToAccessInfos;
+  MapToAccessInfos ais_for_loading_exec_;
+  MapToAccessInfos ais_for_loading_has_instance_;
   MapToAccessInfos ais_for_loading_then_;
+  ZoneUnorderedMap<MapNameRefPair, PropertyAccessInfo, MapNameRefPair::Hash,
+                   MapNameRefPair::Equal>
+      property_access_infos_for_load_;
 
   static const size_t kMinimalRefsBucketCount = 8;     // must be power of 2
   static const size_t kInitialRefsBucketCount = 1024;  // must be power of 2

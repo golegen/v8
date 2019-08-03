@@ -220,8 +220,6 @@ void HeapObject::HeapObjectPrint(std::ostream& os) {  // NOLINT
     case JS_API_OBJECT_TYPE:
     case JS_SPECIAL_API_OBJECT_TYPE:
     case JS_CONTEXT_EXTENSION_OBJECT_TYPE:
-    case JS_ASYNC_FUNCTION_OBJECT_TYPE:
-    case JS_ASYNC_GENERATOR_OBJECT_TYPE:
     case JS_ARGUMENTS_TYPE:
     case JS_ERROR_TYPE:
     // TODO(titzer): debug printing for more wasm objects
@@ -243,6 +241,8 @@ void HeapObject::HeapObjectPrint(std::ostream& os) {  // NOLINT
     case WASM_INSTANCE_TYPE:
       WasmInstanceObject::cast(*this).WasmInstanceObjectPrint(os);
       break;
+    case JS_ASYNC_FUNCTION_OBJECT_TYPE:
+    case JS_ASYNC_GENERATOR_OBJECT_TYPE:
     case JS_GENERATOR_OBJECT_TYPE:
       JSGeneratorObject::cast(*this).JSGeneratorObjectPrint(os);
       break;
@@ -1340,7 +1340,17 @@ void JSFinalizationGroup::JSFinalizationGroupPrint(std::ostream& os) {
   os << "\n - native_context: " << Brief(native_context());
   os << "\n - cleanup: " << Brief(cleanup());
   os << "\n - active_cells: " << Brief(active_cells());
+  Object active_cell = active_cells();
+  while (active_cell.IsWeakCell()) {
+    os << "\n   - " << Brief(active_cell);
+    active_cell = WeakCell::cast(active_cell).next();
+  }
   os << "\n - cleared_cells: " << Brief(cleared_cells());
+  Object cleared_cell = cleared_cells();
+  while (cleared_cell.IsWeakCell()) {
+    os << "\n   - " << Brief(cleared_cell);
+    cleared_cell = WeakCell::cast(cleared_cell).next();
+  }
   os << "\n - key_map: " << Brief(key_map());
   JSObjectPrintBody(os, *this);
 }
@@ -1350,12 +1360,6 @@ void JSFinalizationGroupCleanupIterator::
   JSObjectPrintHeader(os, *this, "JSFinalizationGroupCleanupIterator");
   os << "\n - finalization_group: " << Brief(finalization_group());
   JSObjectPrintBody(os, *this);
-}
-
-void FinalizationGroupCleanupJobTask::FinalizationGroupCleanupJobTaskPrint(
-    std::ostream& os) {
-  PrintHeader(os, "FinalizationGroupCleanupJobTask");
-  os << "\n - finalization_group: " << Brief(finalization_group());
 }
 
 void JSWeakMap::JSWeakMapPrint(std::ostream& os) {  // NOLINT
@@ -1378,7 +1382,6 @@ void JSArrayBuffer::JSArrayBufferPrint(std::ostream& os) {  // NOLINT
   if (is_detachable()) os << "\n - detachable";
   if (was_detached()) os << "\n - detached";
   if (is_shared()) os << "\n - shared";
-  if (is_wasm_memory()) os << "\n - is_wasm_memory";
   JSObjectPrintBody(os, *this, !was_detached());
 }
 

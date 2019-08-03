@@ -111,7 +111,7 @@ void WasmModuleObject::reset_breakpoint_infos() {
               GetReadOnlyRoots().undefined_value());
 }
 bool WasmModuleObject::is_asm_js() {
-  bool asm_js = module()->origin == wasm::kAsmJsOrigin;
+  bool asm_js = is_asmjs_module(module());
   DCHECK_EQ(asm_js, script().IsUserJavaScript());
   DCHECK_EQ(asm_js, has_asm_js_offset_table());
   return asm_js;
@@ -165,7 +165,7 @@ double WasmGlobalObject::GetF64() {
 }
 
 Handle<Object> WasmGlobalObject::GetRef() {
-  // We use this getter for anyref, anyfunc, and except_ref.
+  // We use this getter for anyref, funcref, and exnref.
   DCHECK(wasm::ValueTypes::IsReferenceType(type()));
   return handle(tagged_buffer().get(offset()), GetIsolate());
 }
@@ -187,13 +187,13 @@ void WasmGlobalObject::SetF64(double value) {
 }
 
 void WasmGlobalObject::SetAnyRef(Handle<Object> value) {
-  // We use this getter anyref and except_ref.
-  DCHECK(type() == wasm::kWasmAnyRef || type() == wasm::kWasmExceptRef);
+  // We use this getter anyref and exnref.
+  DCHECK(type() == wasm::kWasmAnyRef || type() == wasm::kWasmExnRef);
   tagged_buffer().set(offset(), *value);
 }
 
-bool WasmGlobalObject::SetAnyFunc(Isolate* isolate, Handle<Object> value) {
-  DCHECK_EQ(type(), wasm::kWasmAnyFunc);
+bool WasmGlobalObject::SetFuncRef(Isolate* isolate, Handle<Object> value) {
+  DCHECK_EQ(type(), wasm::kWasmFuncRef);
   if (!value->IsNull(isolate) &&
       !WasmExportedFunction::IsWasmExportedFunction(*value) &&
       !WasmCapiFunction::IsWasmCapiFunction(*value)) {
@@ -261,9 +261,6 @@ OPTIONAL_ACCESSORS(WasmInstanceObject, managed_native_allocations, Foreign,
                    kManagedNativeAllocationsOffset)
 OPTIONAL_ACCESSORS(WasmInstanceObject, exceptions_table, FixedArray,
                    kExceptionsTableOffset)
-ACCESSORS(WasmInstanceObject, undefined_value, Oddball, kUndefinedValueOffset)
-ACCESSORS(WasmInstanceObject, null_value, Oddball, kNullValueOffset)
-ACCESSORS(WasmInstanceObject, centry_stub, Code, kCEntryStubOffset)
 OPTIONAL_ACCESSORS(WasmInstanceObject, wasm_exported_functions, FixedArray,
                    kWasmExportedFunctionsOffset)
 

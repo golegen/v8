@@ -7,7 +7,9 @@
 #include <memory>
 
 #include "src/api/api-inl.h"
+#include "src/base/v8-fallthrough.h"
 #include "src/execution/execution.h"
+#include "src/execution/frames.h"
 #include "src/execution/isolate-inl.h"
 #include "src/logging/counters.h"
 #include "src/objects/foreign-inl.h"
@@ -330,6 +332,7 @@ void JSStackFrame::FromFrameArray(Isolate* isolate, Handle<FrameArray> array,
   function_ = handle(array->Function(frame_ix), isolate);
   code_ = handle(array->Code(frame_ix), isolate);
   offset_ = array->Offset(frame_ix).value();
+  cached_position_ = base::nullopt;
 
   const int flags = array->Flags(frame_ix).value();
   is_constructor_ = (flags & FrameArray::kIsConstructor) != 0;
@@ -346,6 +349,7 @@ JSStackFrame::JSStackFrame(Isolate* isolate, Handle<Object> receiver,
       function_(function),
       code_(code),
       offset_(offset),
+      cached_position_(base::nullopt),
       is_async_(false),
       is_constructor_(false),
       is_strict_(false) {}
@@ -510,9 +514,12 @@ bool JSStackFrame::IsToplevel() {
 }
 
 int JSStackFrame::GetPosition() const {
+  if (cached_position_) return *cached_position_;
+
   Handle<SharedFunctionInfo> shared = handle(function_->shared(), isolate_);
   SharedFunctionInfo::EnsureSourcePositionsAvailable(isolate_, shared);
-  return code_->SourcePosition(offset_);
+  cached_position_ = code_->SourcePosition(offset_);
+  return *cached_position_;
 }
 
 bool JSStackFrame::HasScript() const {
@@ -975,7 +982,7 @@ MaybeHandle<String> MessageFormatter::Format(Isolate* isolate,
 MaybeHandle<Object> ErrorUtils::Construct(
     Isolate* isolate, Handle<JSFunction> target, Handle<Object> new_target,
     Handle<Object> message, FrameSkipMode mode, Handle<Object> caller,
-    bool suppress_detailed_trace) {
+    StackTraceCollection stack_trace_collection) {
   // 1. If NewTarget is undefined, let newTarget be the active function object,
   // else let newTarget be NewTarget.
 
@@ -1009,17 +1016,19 @@ MaybeHandle<Object> ErrorUtils::Construct(
         Object);
   }
 
-  // Optionally capture a more detailed stack trace for the message.
-  if (!suppress_detailed_trace) {
-    RETURN_ON_EXCEPTION(isolate, isolate->CaptureAndSetDetailedStackTrace(err),
-                        Object);
+  switch (stack_trace_collection) {
+    case StackTraceCollection::kDetailed:
+      RETURN_ON_EXCEPTION(
+          isolate, isolate->CaptureAndSetDetailedStackTrace(err), Object);
+      V8_FALLTHROUGH;
+    case StackTraceCollection::kSimple:
+      RETURN_ON_EXCEPTION(
+          isolate, isolate->CaptureAndSetSimpleStackTrace(err, mode, caller),
+          Object);
+      break;
+    case StackTraceCollection::kNone:
+      break;
   }
-
-  // Capture a simple stack trace for the stack property.
-  RETURN_ON_EXCEPTION(isolate,
-                      isolate->CaptureAndSetSimpleStackTrace(err, mode, caller),
-                      Object);
-
   return err;
 }
 
@@ -1148,7 +1157,7 @@ MaybeHandle<Object> ErrorUtils::MakeGenericError(
 
   Handle<Object> no_caller;
   return ErrorUtils::Construct(isolate, constructor, constructor, msg, mode,
-                               no_caller, false);
+                               no_caller, StackTraceCollection::kDetailed);
 }
 
 }  // namespace internal

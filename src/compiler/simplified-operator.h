@@ -487,28 +487,6 @@ V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream&, BigIntOperationHint);
 V8_EXPORT_PRIVATE NumberOperationHint NumberOperationHintOf(const Operator* op)
     V8_WARN_UNUSED_RESULT;
 
-class BigIntOperationParameters {
- public:
-  BigIntOperationParameters(BigIntOperationHint hint,
-                            const VectorSlotPair& feedback)
-      : hint_(hint), feedback_(feedback) {}
-
-  BigIntOperationHint hint() const { return hint_; }
-  const VectorSlotPair& feedback() const { return feedback_; }
-
- private:
-  BigIntOperationHint hint_;
-  VectorSlotPair feedback_;
-};
-
-size_t hash_value(const BigIntOperationParameters&);
-V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream&,
-                                           const BigIntOperationParameters&);
-bool operator==(const BigIntOperationParameters& lhs,
-                const BigIntOperationParameters& rhs);
-const BigIntOperationParameters& BigIntOperationParametersOf(const Operator* op)
-    V8_WARN_UNUSED_RESULT;
-
 class NumberOperationParameters {
  public:
   NumberOperationParameters(NumberOperationHint hint,
@@ -661,6 +639,9 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
 
   const Operator* NumberSilenceNaN();
 
+  const Operator* BigIntAdd();
+  const Operator* BigIntNegate();
+
   const Operator* SpeculativeSafeIntegerAdd(NumberOperationHint hint);
   const Operator* SpeculativeSafeIntegerSubtract(NumberOperationHint hint);
 
@@ -680,8 +661,8 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* SpeculativeNumberLessThanOrEqual(NumberOperationHint hint);
   const Operator* SpeculativeNumberEqual(NumberOperationHint hint);
 
-  const Operator* SpeculativeBigIntAdd(BigIntOperationHint hint,
-                                       const VectorSlotPair& feedback);
+  const Operator* SpeculativeBigIntAdd(BigIntOperationHint hint);
+  const Operator* SpeculativeBigIntNegate(BigIntOperationHint hint);
   const Operator* BigIntAsUintN(int bits);
 
   const Operator* ReferenceEqual();
@@ -718,6 +699,7 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* PlainPrimitiveToWord32();
   const Operator* PlainPrimitiveToFloat64();
 
+  const Operator* ChangeCompressedSignedToInt32();
   const Operator* ChangeTaggedSignedToInt32();
   const Operator* ChangeTaggedSignedToInt64();
   const Operator* ChangeTaggedToInt32();
@@ -727,6 +709,7 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* ChangeTaggedToTaggedSigned();
   const Operator* ChangeCompressedToTaggedSigned();
   const Operator* ChangeTaggedToCompressedSigned();
+  const Operator* ChangeInt31ToCompressedSigned();
   const Operator* ChangeInt31ToTaggedSigned();
   const Operator* ChangeInt32ToTagged();
   const Operator* ChangeInt64ToTagged();
@@ -774,6 +757,8 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* CheckedInt32Mod();
   const Operator* CheckedInt32Mul(CheckForMinusZeroMode);
   const Operator* CheckedInt32Sub();
+  const Operator* CheckedInt32ToCompressedSigned(
+      const VectorSlotPair& feedback);
   const Operator* CheckedInt32ToTaggedSigned(const VectorSlotPair& feedback);
   const Operator* CheckedInt64ToInt32(const VectorSlotPair& feedback);
   const Operator* CheckedInt64ToTaggedSigned(const VectorSlotPair& feedback);
@@ -908,6 +893,9 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
 
   // Abort (for terminating execution on internal error).
   const Operator* RuntimeAbort(AbortReason reason);
+
+  // Abort if the value input does not inhabit the given type
+  const Operator* AssertType(Type type);
 
   const Operator* DateNow();
 

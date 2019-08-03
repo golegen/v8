@@ -784,6 +784,7 @@ void Heap::CreateInitialObjects() {
 
   set_feedback_vectors_for_profiling_tools(roots.undefined_value());
   set_pending_optimize_for_test_bytecode(roots.undefined_value());
+  set_shared_wasm_memories(roots.empty_weak_array_list());
 
   set_script_list(roots.empty_weak_array_list());
 
@@ -873,10 +874,6 @@ void Heap::CreateInitialObjects() {
   cell = factory->NewPropertyCell(factory->empty_string());
   cell->set_value(Smi::FromInt(Isolate::kProtectorValid));
   set_promise_species_protector(*cell);
-
-  cell = factory->NewPropertyCell(factory->empty_string());
-  cell->set_value(Smi::FromInt(Isolate::kProtectorValid));
-  set_regexp_species_protector(*cell);
 
   cell = factory->NewPropertyCell(factory->empty_string());
   cell->set_value(Smi::FromInt(Isolate::kProtectorValid));

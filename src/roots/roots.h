@@ -219,7 +219,6 @@ class Symbol;
   V(Cell, is_concat_spreadable_protector, IsConcatSpreadableProtector)       \
   V(PropertyCell, array_species_protector, ArraySpeciesProtector)            \
   V(PropertyCell, typed_array_species_protector, TypedArraySpeciesProtector) \
-  V(PropertyCell, regexp_species_protector, RegExpSpeciesProtector)          \
   V(PropertyCell, promise_species_protector, PromiseSpeciesProtector)        \
   V(Cell, string_length_protector, StringLengthProtector)                    \
   V(PropertyCell, array_iterator_protector, ArrayIteratorProtector)          \
@@ -267,7 +266,9 @@ class Symbol;
   V(HeapObject, weak_refs_keep_during_job, WeakRefsKeepDuringJob)          \
   V(HeapObject, interpreter_entry_trampoline_for_profiling,                \
     InterpreterEntryTrampolineForProfiling)                                \
-  V(Object, pending_optimize_for_test_bytecode, PendingOptimizeForTestBytecode)
+  V(Object, pending_optimize_for_test_bytecode,                            \
+    PendingOptimizeForTestBytecode)                                        \
+  V(WeakArrayList, shared_wasm_memories, SharedWasmMemories)
 
 // Entries in this list are limited to Smis and are not visited during GC.
 #define SMI_ROOT_LIST(V)                                                       \

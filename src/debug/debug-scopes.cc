@@ -538,11 +538,8 @@ void ScopeIterator::RetrieveScopeChain(DeclarationScope* scope) {
       int beg_pos = inner_scope->start_position();
       int end_pos = inner_scope->end_position();
       DCHECK((beg_pos >= 0 && end_pos >= 0) || inner_scope->is_hidden());
-      if (beg_pos <= position && position < end_pos) {
-        // Don't walk into inner functions.
-        if (!inner_scope->is_function_scope()) {
-          current = inner_scope;
-        }
+      if (beg_pos < position && position < end_pos) {
+        current = inner_scope;
         break;
       }
     }
@@ -887,10 +884,9 @@ bool ScopeIterator::SetContextVariableValue(Handle<String> variable_name,
   VariableMode mode;
   InitializationFlag flag;
   MaybeAssignedFlag maybe_assigned_flag;
-  RequiresBrandCheckFlag requires_brand_check;
-  int slot_index = ScopeInfo::ContextSlotIndex(
-      context_->scope_info(), *variable_name, &mode, &flag,
-      &maybe_assigned_flag, &requires_brand_check);
+  int slot_index =
+      ScopeInfo::ContextSlotIndex(context_->scope_info(), *variable_name, &mode,
+                                  &flag, &maybe_assigned_flag);
   if (slot_index < 0) return false;
 
   context_->set(slot_index, *new_value);

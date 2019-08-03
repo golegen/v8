@@ -169,7 +169,7 @@ StackTraceFrameIterator::StackTraceFrameIterator(Isolate* isolate)
 }
 
 StackTraceFrameIterator::StackTraceFrameIterator(Isolate* isolate,
-                                                 StackFrame::Id id)
+                                                 StackFrameId id)
     : StackTraceFrameIterator(isolate) {
   while (!done() && frame()->id() != id) Advance();
 }
@@ -278,6 +278,11 @@ SafeStackFrameIterator::SafeStackFrameIterator(Isolate* isolate, Address pc,
   bool advance_frame = true;
 
   Address fast_c_fp = isolate->isolate_data()->fast_c_call_caller_fp();
+  uint8_t stack_is_iterable = isolate->isolate_data()->stack_is_iterable();
+  if (!stack_is_iterable) {
+    frame_ = nullptr;
+    return;
+  }
   // 'Fast C calls' are a special type of C call where we call directly from JS
   // to C without an exit frame inbetween. The CEntryStub is responsible for
   // setting Isolate::c_entry_fp, meaning that it won't be set for fast C calls.
@@ -574,6 +579,8 @@ StackFrame::Type StackFrame::ComputeType(const StackFrameIteratorBase* iterator,
             return OPTIMIZED;
           case Code::JS_TO_WASM_FUNCTION:
             return JS_TO_WASM;
+          case Code::JS_TO_JS_FUNCTION:
+            return STUB;
           case Code::C_WASM_ENTRY:
             return C_WASM_ENTRY;
           case Code::WASM_FUNCTION:
@@ -1938,7 +1945,8 @@ int WasmCompiledFrame::LookupExceptionHandlerInTable(int* stack_slots) {
   wasm::WasmCode* code =
       isolate()->wasm_engine()->code_manager()->LookupCode(pc());
   if (!code->IsAnonymous() && code->handler_table_size() > 0) {
-    HandlerTable table(code->handler_table(), code->handler_table_size());
+    HandlerTable table(code->handler_table(), code->handler_table_size(),
+                       HandlerTable::kReturnAddressBasedEncoding);
     int pc_offset = static_cast<int>(pc() - code->instruction_start());
     *stack_slots = static_cast<int>(code->stack_slots());
     return table.LookupReturn(pc_offset);

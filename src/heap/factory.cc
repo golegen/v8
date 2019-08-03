@@ -285,11 +285,12 @@ HeapObject Factory::New(Handle<Map> map, AllocationType allocation) {
 }
 
 Handle<HeapObject> Factory::NewFillerObject(int size, bool double_align,
-                                            AllocationType allocation) {
+                                            AllocationType allocation,
+                                            AllocationOrigin origin) {
   AllocationAlignment alignment = double_align ? kDoubleAligned : kWordAligned;
   Heap* heap = isolate()->heap();
   HeapObject result =
-      heap->AllocateRawWithRetryOrFail(size, allocation, alignment);
+      heap->AllocateRawWithRetryOrFail(size, allocation, origin, alignment);
   heap->CreateFillerObjectAt(result.address(), size, ClearRecordedSlots::kNo);
   return Handle<HeapObject>(result, isolate());
 }
@@ -1314,7 +1315,7 @@ Handle<String> Factory::NewProperSubString(Handle<String> str, int begin,
 
   slice->set_hash_field(String::kEmptyHashField);
   slice->set_length(length);
-  slice->set_parent(isolate(), *str);
+  slice->set_parent(*str);
   slice->set_offset(offset);
   return slice;
 }
@@ -1744,16 +1745,6 @@ Handle<PromiseResolveThenableJobTask> Factory::NewPromiseResolveThenableJobTask(
   return microtask;
 }
 
-Handle<FinalizationGroupCleanupJobTask>
-Factory::NewFinalizationGroupCleanupJobTask(
-    Handle<JSFinalizationGroup> finalization_group) {
-  Handle<FinalizationGroupCleanupJobTask> microtask =
-      Handle<FinalizationGroupCleanupJobTask>::cast(
-          NewStruct(FINALIZATION_GROUP_CLEANUP_JOB_TASK_TYPE));
-  microtask->set_finalization_group(*finalization_group);
-  return microtask;
-}
-
 Handle<Foreign> Factory::NewForeign(Address addr, AllocationType allocation) {
   // Statically ensure that it is safe to allocate foreigns in paged spaces.
   STATIC_ASSERT(Foreign::kSize <= kMaxRegularHeapObjectSize);
@@ -2010,7 +2001,8 @@ Handle<JSObject> Factory::CopyJSObjectWithAllocationSite(
   HeapObject raw_clone = isolate()->heap()->AllocateRawWithRetryOrFail(
       adjusted_object_size, AllocationType::kYoung);
 
-  DCHECK(Heap::InYoungGeneration(raw_clone));
+  DCHECK(Heap::InYoungGeneration(raw_clone) || FLAG_single_generation);
+
   // Since we know the clone is allocated in new space, we can copy
   // the contents without worrying about updating the write barrier.
   Heap::CopyBlock(raw_clone.address(), source->address(), object_size);
@@ -2065,6 +2057,13 @@ void initialize_length(Handle<T> array, int length) {
 template <>
 void initialize_length<PropertyArray>(Handle<PropertyArray> array, int length) {
   array->initialize_length(length);
+}
+
+inline void ZeroEmbedderFields(i::Handle<i::JSObject> obj) {
+  auto count = obj->GetEmbedderFieldCount();
+  for (int i = 0; i < count; i++) {
+    obj->SetEmbedderField(i, Smi::kZero);
+  }
 }
 
 }  // namespace
@@ -2290,9 +2289,9 @@ Handle<Object> Factory::NewError(Handle<JSFunction> constructor,
   // as the result.
 
   Handle<Object> no_caller;
-  MaybeHandle<Object> maybe_error =
-      ErrorUtils::Construct(isolate(), constructor, constructor, message,
-                            SKIP_NONE, no_caller, false);
+  MaybeHandle<Object> maybe_error = ErrorUtils::Construct(
+      isolate(), constructor, constructor, message, SKIP_NONE, no_caller,
+      ErrorUtils::StackTraceCollection::kDetailed);
   if (maybe_error.is_null()) {
     DCHECK(isolate()->has_pending_exception());
     maybe_error = handle(isolate()->pending_exception(), isolate());
@@ -3093,15 +3092,46 @@ Handle<SyntheticModule> Factory::NewSyntheticModule(
   return module;
 }
 
-Handle<JSArrayBuffer> Factory::NewJSArrayBuffer(SharedFlag shared,
-                                                AllocationType allocation) {
-  Handle<JSFunction> array_buffer_fun(
-      shared == SharedFlag::kShared
-          ? isolate()->native_context()->shared_array_buffer_fun()
-          : isolate()->native_context()->array_buffer_fun(),
+Handle<JSArrayBuffer> Factory::NewJSArrayBuffer(AllocationType allocation) {
+  Handle<Map> map(isolate()->native_context()->array_buffer_fun().initial_map(),
+                  isolate());
+  auto result =
+      Handle<JSArrayBuffer>::cast(NewJSObjectFromMap(map, allocation));
+  ZeroEmbedderFields(result);
+  result->SetupEmpty(SharedFlag::kNotShared);
+  return result;
+}
+
+MaybeHandle<JSArrayBuffer> Factory::NewJSArrayBufferAndBackingStore(
+    size_t byte_length, InitializedFlag initialized,
+    AllocationType allocation) {
+  // TODO(titzer): Don't bother allocating a 0-length backing store.
+  // This is currently required because the embedder API for
+  // TypedArray::HasBuffer() checks if the backing store is nullptr.
+  // That check should be changed.
+
+  std::unique_ptr<BackingStore> backing_store = BackingStore::Allocate(
+      isolate(), byte_length, SharedFlag::kNotShared, initialized);
+  if (!backing_store) return MaybeHandle<JSArrayBuffer>();
+  Handle<Map> map(isolate()->native_context()->array_buffer_fun().initial_map(),
+                  isolate());
+  auto array_buffer =
+      Handle<JSArrayBuffer>::cast(NewJSObjectFromMap(map, allocation));
+  array_buffer->Attach(std::move(backing_store));
+  ZeroEmbedderFields(array_buffer);
+  return array_buffer;
+}
+
+Handle<JSArrayBuffer> Factory::NewJSSharedArrayBuffer(
+    AllocationType allocation) {
+  Handle<Map> map(
+      isolate()->native_context()->shared_array_buffer_fun().initial_map(),
       isolate());
-  Handle<Map> map(array_buffer_fun->initial_map(), isolate());
-  return Handle<JSArrayBuffer>::cast(NewJSObjectFromMap(map, allocation));
+  auto result =
+      Handle<JSArrayBuffer>::cast(NewJSObjectFromMap(map, allocation));
+  ZeroEmbedderFields(result);
+  result->SetupEmpty(SharedFlag::kShared);
+  return result;
 }
 
 Handle<JSIteratorResult> Factory::NewJSIteratorResult(Handle<Object> value,
@@ -3190,9 +3220,7 @@ Handle<JSArrayBufferView> Factory::NewJSArrayBufferView(
   array_buffer_view->set_buffer(*buffer);
   array_buffer_view->set_byte_offset(byte_offset);
   array_buffer_view->set_byte_length(byte_length);
-  for (int i = 0; i < v8::ArrayBufferView::kEmbedderFieldCount; i++) {
-    array_buffer_view->SetEmbedderField(i, Smi::kZero);
-  }
+  ZeroEmbedderFields(array_buffer_view);
   DCHECK_EQ(array_buffer_view->GetEmbedderFieldCount(),
             v8::ArrayBufferView::kEmbedderFieldCount);
   return array_buffer_view;
@@ -3688,22 +3716,23 @@ Handle<StackFrameInfo> Factory::NewStackFrameInfo(
   DCHECK(it.HasFrame());
 
   const bool is_wasm = frame_array->IsAnyWasmFrame(index);
+  StackFrameBase* frame = it.Frame();
 
-  int line = it.Frame()->GetLineNumber();
-  int column = it.Frame()->GetColumnNumber();
+  int line = frame->GetLineNumber();
+  int column = frame->GetColumnNumber();
 
-  const int script_id = it.Frame()->GetScriptId();
+  const int script_id = frame->GetScriptId();
 
-  Handle<Object> script_name = it.Frame()->GetFileName();
-  Handle<Object> script_or_url = it.Frame()->GetScriptNameOrSourceUrl();
+  Handle<Object> script_name = frame->GetFileName();
+  Handle<Object> script_or_url = frame->GetScriptNameOrSourceUrl();
 
   // TODO(szuend): Adjust this, once it is decided what name to use in both
   //               "simple" and "detailed" stack traces. This code is for
   //               backwards compatibility to fullfill test expectations.
-  auto function_name = it.Frame()->GetFunctionName();
+  auto function_name = frame->GetFunctionName();
   bool is_user_java_script = false;
   if (!is_wasm) {
-    Handle<Object> function = it.Frame()->GetFunction();
+    Handle<Object> function = frame->GetFunction();
     if (function->IsJSFunction()) {
       Handle<JSFunction> fun = Handle<JSFunction>::cast(function);
 
@@ -3711,10 +3740,24 @@ Handle<StackFrameInfo> Factory::NewStackFrameInfo(
     }
   }
 
-  Handle<Object> method_name = it.Frame()->GetMethodName();
-  Handle<Object> type_name = it.Frame()->GetTypeName();
-  Handle<Object> eval_origin = it.Frame()->GetEvalOrigin();
-  Handle<Object> wasm_module_name = it.Frame()->GetWasmModuleName();
+  Handle<Object> method_name = undefined_value();
+  Handle<Object> type_name = undefined_value();
+  Handle<Object> eval_origin = frame->GetEvalOrigin();
+  Handle<Object> wasm_module_name = frame->GetWasmModuleName();
+
+  // MethodName and TypeName are expensive to look up, so they are only
+  // included when they are strictly needed by the stack trace
+  // serialization code.
+  // Note: The {is_method_call} predicate needs to be kept in sync with
+  //       the corresponding predicate in the stack trace serialization code
+  //       in stack-frame-info.cc.
+  const bool is_toplevel = frame->IsToplevel();
+  const bool is_constructor = frame->IsConstructor();
+  const bool is_method_call = !(is_toplevel || is_constructor);
+  if (is_method_call) {
+    method_name = frame->GetMethodName();
+    type_name = frame->GetTypeName();
+  }
 
   Handle<StackFrameInfo> info = Handle<StackFrameInfo>::cast(
       NewStruct(STACK_FRAME_INFO_TYPE, AllocationType::kYoung));
@@ -3737,12 +3780,12 @@ Handle<StackFrameInfo> Factory::NewStackFrameInfo(
   info->set_eval_origin(*eval_origin);
   info->set_wasm_module_name(*wasm_module_name);
 
-  info->set_is_eval(it.Frame()->IsEval());
-  info->set_is_constructor(it.Frame()->IsConstructor());
-  info->set_is_toplevel(it.Frame()->IsToplevel());
-  info->set_is_async(it.Frame()->IsAsync());
-  info->set_is_promise_all(it.Frame()->IsPromiseAll());
-  info->set_promise_all_index(it.Frame()->GetPromiseIndex());
+  info->set_is_eval(frame->IsEval());
+  info->set_is_constructor(is_constructor);
+  info->set_is_toplevel(is_toplevel);
+  info->set_is_async(frame->IsAsync());
+  info->set_is_promise_all(frame->IsPromiseAll());
+  info->set_promise_all_index(frame->GetPromiseIndex());
 
   return info;
 }
@@ -4133,9 +4176,7 @@ Handle<JSPromise> Factory::NewJSPromiseWithoutHook(AllocationType allocation) {
       NewJSObject(isolate()->promise_function(), allocation));
   promise->set_reactions_or_result(Smi::kZero);
   promise->set_flags(0);
-  for (int i = 0; i < v8::Promise::kEmbedderFieldCount; i++) {
-    promise->SetEmbedderField(i, Smi::kZero);
-  }
+  ZeroEmbedderFields(promise);
   return promise;
 }
 

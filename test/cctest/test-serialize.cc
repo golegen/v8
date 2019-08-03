@@ -98,7 +98,8 @@ class TestSerializer {
     return v8_isolate;
   }
 
-  static v8::Isolate* NewIsolateFromBlob(StartupBlobs& blobs) {
+  static v8::Isolate* NewIsolateFromBlob(
+      StartupBlobs& blobs) {  // NOLINT(runtime/references)
     SnapshotData startup_snapshot(blobs.startup);
     SnapshotData read_only_snapshot(blobs.read_only);
     ReadOnlyDeserializer read_only_deserializer(&read_only_snapshot);
@@ -203,13 +204,12 @@ Vector<const uint8_t> ConstructSource(Vector<const uint8_t> head,
                                source_length);
 }
 
-
-static v8::Isolate* Deserialize(StartupBlobs& blobs) {
+static v8::Isolate* Deserialize(
+    StartupBlobs& blobs) {  // NOLINT(runtime/references)
   v8::Isolate* isolate = TestSerializer::NewIsolateFromBlob(blobs);
   CHECK(isolate);
   return isolate;
 }
-
 
 static void SanityCheck(v8::Isolate* v8_isolate) {
   Isolate* isolate = reinterpret_cast<Isolate*>(v8_isolate);
@@ -2931,6 +2931,53 @@ UNINITIALIZED_TEST(SnapshotCreatorArrayJoinWithKeep) {
       v8::Local<v8::Context> context = v8::Context::New(isolate);
       v8::Context::Scope context_scope(context);
       ExpectString("g()", "1,2,3");
+    }
+    isolate->Dispose();
+  }
+  delete[] blob.data;
+  FreeCurrentEmbeddedBlob();
+}
+
+v8::StartupData CreateCustomSnapshotWithDuplicateFunctions() {
+  v8::SnapshotCreator creator;
+  v8::Isolate* isolate = creator.GetIsolate();
+  {
+    v8::HandleScope handle_scope(isolate);
+    {
+      v8::Local<v8::Context> context = v8::Context::New(isolate);
+      v8::Context::Scope context_scope(context);
+      CompileRun(
+          "function f() { return (() => 'a'); }\n"
+          "let g1 = f();\n"
+          "let g2 = f();\n");
+      ExpectString("g1()", "a");
+      ExpectString("g2()", "a");
+      creator.SetDefaultContext(context);
+    }
+  }
+  return creator.CreateBlob(v8::SnapshotCreator::FunctionCodeHandling::kKeep);
+}
+
+UNINITIALIZED_TEST(SnapshotCreatorDuplicateFunctions) {
+  DisableAlwaysOpt();
+  DisableEmbeddedBlobRefcounting();
+  v8::StartupData blob = CreateCustomSnapshotWithDuplicateFunctions();
+  ReadOnlyHeap::ClearSharedHeapForTest();
+
+  // Deserialize with an incomplete list of external references.
+  {
+    v8::Isolate::CreateParams params;
+    params.snapshot_blob = &blob;
+    params.array_buffer_allocator = CcTest::array_buffer_allocator();
+    // Test-appropriate equivalent of v8::Isolate::New.
+    v8::Isolate* isolate = TestSerializer::NewIsolate(params);
+    {
+      v8::Isolate::Scope isolate_scope(isolate);
+      v8::HandleScope handle_scope(isolate);
+      v8::Local<v8::Context> context = v8::Context::New(isolate);
+      v8::Context::Scope context_scope(context);
+      ExpectString("g1()", "a");
+      ExpectString("g2()", "a");
     }
     isolate->Dispose();
   }

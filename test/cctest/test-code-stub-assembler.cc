@@ -311,7 +311,7 @@ TEST(DecodeWordFromWord32) {
   CodeAssemblerTester asm_tester(isolate);
   CodeStubAssembler m(asm_tester.state());
 
-  class TestBitField : public BitField<unsigned, 3, 3> {};
+  using TestBitField = BitField<unsigned, 3, 3>;
   m.Return(m.SmiTag(
       m.Signed(m.DecodeWordFromWord32<TestBitField>(m.Int32Constant(0x2F)))));
   FunctionTester ft(asm_tester.GenerateCode());
@@ -1559,8 +1559,8 @@ TEST(TryLookupElement) {
 
     v8::ArrayBuffer::Contents contents = buffer->Externalize();
     buffer->Detach();
-    isolate->array_buffer_allocator()->Free(contents.Data(),
-                                            contents.ByteLength());
+    contents.Deleter()(contents.Data(), contents.ByteLength(),
+                       contents.DeleterData());
 
     CHECK_ABSENT(object, 0);
     CHECK_ABSENT(object, 1);

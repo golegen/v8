@@ -46,6 +46,8 @@ class WasmJSFunction;
 class WasmModuleObject;
 class WasmIndirectFunctionTable;
 
+enum class SharedFlag : uint8_t;
+
 template <class CppType>
 class Managed;
 
@@ -73,8 +75,6 @@ class IndirectFunctionTableEntry {
                              Handle<WasmInstanceObject> target_instance,
                              int target_func_index);
   void Set(int sig_id, Address call_target, Object ref);
-
-  void CopyFrom(const IndirectFunctionTableEntry& that);
 
   Object object_ref() const;
   int sig_id() const;
@@ -141,18 +141,14 @@ class WasmModuleObject : public JSObject {
   DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
                                 TORQUE_GENERATED_WASM_MODULE_OBJECT_FIELDS)
 
-  // Creates a new {WasmModuleObject} with a new {NativeModule} underneath.
-  V8_EXPORT_PRIVATE static Handle<WasmModuleObject> New(
-      Isolate* isolate, const wasm::WasmFeatures& enabled,
-      std::shared_ptr<const wasm::WasmModule> module,
-      OwnedVector<const uint8_t> wire_bytes, Handle<Script> script,
-      Handle<ByteArray> asm_js_offset_table);
-
   // Creates a new {WasmModuleObject} for an existing {NativeModule} that is
   // reference counted and might be shared between multiple Isolates.
   V8_EXPORT_PRIVATE static Handle<WasmModuleObject> New(
       Isolate* isolate, std::shared_ptr<wasm::NativeModule> native_module,
-      Handle<Script> script, size_t code_size_estimate);
+      Handle<Script> script);
+  V8_EXPORT_PRIVATE static Handle<WasmModuleObject> New(
+      Isolate* isolate, std::shared_ptr<wasm::NativeModule> native_module,
+      Handle<Script> script, Handle<FixedArray> export_wrappers);
   V8_EXPORT_PRIVATE static Handle<WasmModuleObject> New(
       Isolate* isolate, std::shared_ptr<wasm::NativeModule> native_module,
       Handle<Script> script, Handle<FixedArray> export_wrappers,
@@ -359,9 +355,10 @@ class WasmMemoryObject : public JSObject {
   V8_EXPORT_PRIVATE static Handle<WasmMemoryObject> New(
       Isolate* isolate, MaybeHandle<JSArrayBuffer> buffer, uint32_t maximum);
 
-  V8_EXPORT_PRIVATE static MaybeHandle<WasmMemoryObject> New(
-      Isolate* isolate, uint32_t initial, uint32_t maximum,
-      bool is_shared_memory);
+  V8_EXPORT_PRIVATE static MaybeHandle<WasmMemoryObject> New(Isolate* isolate,
+                                                             uint32_t initial,
+                                                             uint32_t maximum,
+                                                             SharedFlag shared);
 
   void update_instances(Isolate* isolate, Handle<JSArrayBuffer> buffer);
 
@@ -416,7 +413,7 @@ class WasmGlobalObject : public JSObject {
   inline void SetF32(float value);
   inline void SetF64(double value);
   inline void SetAnyRef(Handle<Object> value);
-  inline bool SetAnyFunc(Isolate* isolate, Handle<Object> value);
+  inline bool SetFuncRef(Isolate* isolate, Handle<Object> value);
 
  private:
   // This function returns the address of the global's data in the
@@ -446,9 +443,6 @@ class WasmInstanceObject : public JSObject {
   DECL_OPTIONAL_ACCESSORS(indirect_function_table_refs, FixedArray)
   DECL_OPTIONAL_ACCESSORS(managed_native_allocations, Foreign)
   DECL_OPTIONAL_ACCESSORS(exceptions_table, FixedArray)
-  DECL_ACCESSORS(undefined_value, Oddball)
-  DECL_ACCESSORS(null_value, Oddball)
-  DECL_ACCESSORS(centry_stub, Code)
   DECL_OPTIONAL_ACCESSORS(wasm_exported_functions, FixedArray)
   DECL_PRIMITIVE_ACCESSORS(memory_start, byte*)
   DECL_PRIMITIVE_ACCESSORS(memory_size, size_t)
@@ -493,7 +487,6 @@ class WasmInstanceObject : public JSObject {
   V(kOptionalPaddingOffset, POINTER_SIZE_PADDING(kOptionalPaddingOffset)) \
   V(kGlobalsStartOffset, kSystemPointerSize)                              \
   V(kImportedMutableGlobalsOffset, kSystemPointerSize)                    \
-  V(kUndefinedValueOffset, kTaggedSize)                                   \
   V(kIsolateRootOffset, kSystemPointerSize)                               \
   V(kJumpTableStartOffset, kSystemPointerSize)                            \
   /* End of often-accessed fields. */                                     \
@@ -509,8 +502,6 @@ class WasmInstanceObject : public JSObject {
   V(kIndirectFunctionTablesOffset, kTaggedSize)                           \
   V(kManagedNativeAllocationsOffset, kTaggedSize)                         \
   V(kExceptionsTableOffset, kTaggedSize)                                  \
-  V(kNullValueOffset, kTaggedSize)                                        \
-  V(kCEntryStubOffset, kTaggedSize)                                       \
   V(kWasmExportedFunctionsOffset, kTaggedSize)                            \
   V(kRealStackLimitAddressOffset, kSystemPointerSize)                     \
   V(kDataSegmentStartsOffset, kSystemPointerSize)                         \
@@ -538,7 +529,6 @@ class WasmInstanceObject : public JSObject {
   static constexpr uint16_t kTaggedFieldOffsets[] = {
       kImportedFunctionRefsOffset,
       kIndirectFunctionTableRefsOffset,
-      kUndefinedValueOffset,
       kModuleObjectOffset,
       kExportsObjectOffset,
       kNativeContextOffset,
@@ -551,8 +541,6 @@ class WasmInstanceObject : public JSObject {
       kIndirectFunctionTablesOffset,
       kManagedNativeAllocationsOffset,
       kExceptionsTableOffset,
-      kNullValueOffset,
-      kCEntryStubOffset,
       kWasmExportedFunctionsOffset};
 
   V8_EXPORT_PRIVATE const wasm::WasmModule* module();
@@ -580,8 +568,8 @@ class WasmInstanceObject : public JSObject {
   // Copies table entries. Returns {false} if the ranges are out-of-bounds.
   static bool CopyTableEntries(Isolate* isolate,
                                Handle<WasmInstanceObject> instance,
-                               uint32_t table_src_index,
-                               uint32_t table_dst_index, uint32_t dst,
+                               uint32_t table_dst_index,
+                               uint32_t table_src_index, uint32_t dst,
                                uint32_t src,
                                uint32_t count) V8_WARN_UNUSED_RESULT;
 
@@ -742,7 +730,8 @@ class WasmIndirectFunctionTable : public Struct {
   DECL_OPTIONAL_ACCESSORS(managed_native_allocations, Foreign)
   DECL_ACCESSORS(refs, FixedArray)
 
-  static Handle<WasmIndirectFunctionTable> New(Isolate* isolate, uint32_t size);
+  V8_EXPORT_PRIVATE static Handle<WasmIndirectFunctionTable> New(
+      Isolate* isolate, uint32_t size);
   static void Resize(Isolate* isolate, Handle<WasmIndirectFunctionTable> table,
                      uint32_t new_size);
 

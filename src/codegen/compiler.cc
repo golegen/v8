@@ -15,6 +15,7 @@
 #include "src/codegen/assembler-inl.h"
 #include "src/codegen/compilation-cache.h"
 #include "src/codegen/optimized-compilation-info.h"
+#include "src/codegen/pending-optimization-table.h"
 #include "src/codegen/unoptimized-compilation-info.h"
 #include "src/common/globals.h"
 #include "src/common/message-template.h"
@@ -319,6 +320,8 @@ void OptimizedCompilationJob::RecordCompilationStats(CompilationMode mode,
       counters->turbofan_optimize_total_foreground()->AddSample(
           static_cast<int>(time_foreground.InMicroseconds()));
     }
+    counters->turbofan_ticks()->AddSample(static_cast<int>(
+        compilation_info()->tick_counter().CurrentTicks() / 1000));
   }
 }
 
@@ -593,6 +596,12 @@ MaybeHandle<SharedFunctionInfo> GenerateUnoptimizedCodeForToplevel(
       return MaybeHandle<SharedFunctionInfo>();
     }
 
+    if (FLAG_stress_lazy_source_positions) {
+      // Collect source positions immediately to try and flush out bytecode
+      // mismatches.
+      SharedFunctionInfo::EnsureSourcePositionsAvailable(isolate, shared_info);
+    }
+
     if (shared_info.is_identical_to(top_level)) {
       // Ensure that the top level function is retained.
       *is_compiled_scope = shared_info->is_compiled_scope();
@@ -797,18 +806,10 @@ MaybeHandle<Code> GetOptimizedCode(Handle<JSFunction> function,
     return MaybeHandle<Code>();
   }
 
-  // If code was pending optimization for testing, delete remove the strong root
-  // that was preventing the bytecode from being flushed between marking and
-  // optimization.
-  if (!isolate->heap()->pending_optimize_for_test_bytecode().IsUndefined()) {
-    Handle<ObjectHashTable> table =
-        handle(ObjectHashTable::cast(
-                   isolate->heap()->pending_optimize_for_test_bytecode()),
-               isolate);
-    bool was_present;
-    table = table->Remove(isolate, table, handle(function->shared(), isolate),
-                          &was_present);
-    isolate->heap()->SetPendingOptimizeForTestBytecode(*table);
+  // If code was pending optimization for testing, delete remove the entry
+  // from the table that was preventing the bytecode from being flushed
+  if (V8_UNLIKELY(FLAG_testing_d8_test_runner)) {
+    PendingOptimizationTable::FunctionWasOptimized(isolate, function);
   }
 
   Handle<Code> cached_code;
@@ -2110,6 +2111,10 @@ MaybeHandle<JSFunction> Compiler::GetWrappedFunction(
 
     parse_info.set_eval();  // Use an eval scope as declaration scope.
     parse_info.set_wrapped_as_function();
+    // TODO(delphick): Remove this and instead make the wrapped and wrapper
+    // functions fully non-lazy instead thus preventing source positions from
+    // being omitted.
+    parse_info.set_collect_source_positions(true);
     // parse_info.set_eager(compile_options == ScriptCompiler::kEagerCompile);
     if (!context->IsNativeContext()) {
       parse_info.set_outer_scope_info(handle(context->scope_info(), isolate));

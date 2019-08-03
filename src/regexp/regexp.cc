@@ -7,11 +7,11 @@
 #include "src/codegen/compilation-cache.h"
 #include "src/heap/heap-inl.h"
 #include "src/objects/js-regexp-inl.h"
+#include "src/regexp/regexp-bytecode-generator.h"
 #include "src/regexp/regexp-compiler.h"
 #include "src/regexp/regexp-dotprinter.h"
 #include "src/regexp/regexp-interpreter.h"
 #include "src/regexp/regexp-macro-assembler-arch.h"
-#include "src/regexp/regexp-macro-assembler-irregexp.h"
 #include "src/regexp/regexp-parser.h"
 #include "src/strings/string-search.h"
 
@@ -478,17 +478,13 @@ int RegExpImpl::IrregexpExecRaw(Isolate* isolate, Handle<JSRegExp> regexp,
     int32_t* raw_output = &output[number_of_capture_registers];
 
     do {
-      // We do not touch the actual capture result registers until we know there
-      // has been a match so that we can use those capture results to set the
-      // last match info.
-      for (int i = number_of_capture_registers - 1; i >= 0; i--) {
-        raw_output[i] = -1;
-      }
       Handle<ByteArray> byte_codes(IrregexpByteCode(*irregexp, is_one_byte),
                                    isolate);
 
-      IrregexpInterpreter::Result result = IrregexpInterpreter::Match(
-          isolate, byte_codes, subject, raw_output, index);
+      IrregexpInterpreter::Result result =
+          IrregexpInterpreter::MatchForCallFromRuntime(
+              isolate, byte_codes, subject, raw_output,
+              number_of_capture_registers, index);
       DCHECK_IMPLIES(result == IrregexpInterpreter::EXCEPTION,
                      isolate->has_pending_exception());
 
@@ -706,11 +702,8 @@ bool RegExpImpl::Compile(Isolate* isolate, Zone* zone, RegExpCompileData* data,
 
   if (node == nullptr) node = new (zone) EndNode(EndNode::BACKTRACK, zone);
   data->node = node;
-  Analysis analysis(isolate, is_one_byte);
-  analysis.EnsureAnalyzed(node);
-  if (analysis.has_failed()) {
-    data->error =
-        isolate->factory()->NewStringFromAsciiChecked(analysis.error_message());
+  if (const char* error_message = AnalyzeRegExp(isolate, is_one_byte, node)) {
+    data->error = isolate->factory()->NewStringFromAsciiChecked(error_message);
     return false;
   }
 
@@ -755,7 +748,7 @@ bool RegExpImpl::Compile(Isolate* isolate, Zone* zone, RegExpCompileData* data,
     DCHECK(FLAG_regexp_interpret_all);
 
     // Interpreted regexp implementation.
-    macro_assembler.reset(new RegExpMacroAssemblerIrregexp(isolate, zone));
+    macro_assembler.reset(new RegExpBytecodeGenerator(isolate, zone));
   }
 
   macro_assembler->set_slow_safe(TooMuchRegExpCode(isolate, pattern));

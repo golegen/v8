@@ -35,11 +35,14 @@ using ::wasm::Extern;
 using ::wasm::Foreign;
 using ::wasm::Func;
 using ::wasm::FuncType;
+using ::wasm::Global;
 using ::wasm::Instance;
+using ::wasm::Memory;
 using ::wasm::Module;
 using ::wasm::own;
 using ::wasm::Ref;
 using ::wasm::Store;
+using ::wasm::Table;
 using ::wasm::Trap;
 using ::wasm::Val;
 using ::wasm::ValType;
@@ -62,7 +65,7 @@ class WasmCapiTest : public ::testing::Test {
 
   void Compile() {
     ZoneBuffer buffer(&zone_);
-    builder_.WriteTo(buffer);
+    builder_.WriteTo(&buffer);
     size_t size = buffer.end() - buffer.begin();
     vec<byte_t> binary = vec<byte_t>::make(
         size, reinterpret_cast<byte_t*>(const_cast<byte*>(buffer.begin())));
@@ -79,8 +82,8 @@ class WasmCapiTest : public ::testing::Test {
   }
 
   void AddExportedFunction(Vector<const char> name, byte code[],
-                           size_t code_size) {
-    WasmFunctionBuilder* fun = builder()->AddFunction(wasm_i_i_sig());
+                           size_t code_size, FunctionSig* sig) {
+    WasmFunctionBuilder* fun = builder()->AddFunction(sig);
     fun->EmitCode(code, static_cast<uint32_t>(code_size));
     fun->Emit(kExprEnd);
     builder()->AddExport(name, fun);
@@ -95,6 +98,33 @@ class WasmCapiTest : public ::testing::Test {
     return func;
   }
 
+  Global* GetExportedGlobal(size_t index) {
+    DCHECK_GT(exports_.size(), index);
+    Extern* exported = exports_[index];
+    DCHECK_EQ(exported->kind(), ::wasm::EXTERN_GLOBAL);
+    Global* global = exported->global();
+    DCHECK_NE(global, nullptr);
+    return global;
+  }
+
+  Memory* GetExportedMemory(size_t index) {
+    DCHECK_GT(exports_.size(), index);
+    Extern* exported = exports_[index];
+    DCHECK_EQ(exported->kind(), ::wasm::EXTERN_MEMORY);
+    Memory* memory = exported->memory();
+    DCHECK_NE(memory, nullptr);
+    return memory;
+  }
+
+  Table* GetExportedTable(size_t index) {
+    DCHECK_GT(exports_.size(), index);
+    Extern* exported = exports_[index];
+    DCHECK_EQ(exported->kind(), ::wasm::EXTERN_TABLE);
+    Table* table = exported->table();
+    DCHECK_NE(table, nullptr);
+    return table;
+  }
+
   void Shutdown() {
     instance_.reset();
     module_.reset();
@@ -103,8 +133,10 @@ class WasmCapiTest : public ::testing::Test {
   }
 
   WasmModuleBuilder* builder() { return &builder_; }
+  Engine* engine() { return engine_.get(); }
   Store* store() { return store_.get(); }
   Module* module() { return module_.get(); }
+  const vec<Extern*>& exports() { return exports_; }
 
   FunctionSig* wasm_i_i_sig() { return &wasm_i_i_sig_; }
   FuncType* cpp_i_i_sig() { return cpp_i_i_sig_.get(); }

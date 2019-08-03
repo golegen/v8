@@ -16,6 +16,9 @@
 
 namespace v8 {
 namespace internal {
+
+class TickCounter;
+
 namespace compiler {
 
 static const int32_t kUnassignedRegister = RegisterConfiguration::kMaxRegisters;
@@ -243,6 +246,7 @@ class RegisterAllocationData final : public ZoneObject {
                          Zone* allocation_zone, Frame* frame,
                          InstructionSequence* code,
                          RegisterAllocationFlags flags,
+                         TickCounter* tick_counter,
                          const char* debug_name = nullptr);
 
   const ZoneVector<TopLevelLiveRange*>& live_ranges() const {
@@ -333,6 +337,8 @@ class RegisterAllocationData final : public ZoneObject {
 
   void ResetSpillState() { spill_state_.clear(); }
 
+  TickCounter* tick_counter() { return tick_counter_; }
+
  private:
   int GetNextLiveRangeId();
 
@@ -359,6 +365,7 @@ class RegisterAllocationData final : public ZoneObject {
   RangesWithPreassignedSlots preassigned_slot_ranges_;
   ZoneVector<ZoneVector<LiveRange*>> spill_state_;
   RegisterAllocationFlags flags_;
+  TickCounter* const tick_counter_;
 
   DISALLOW_COPY_AND_ASSIGN(RegisterAllocationData);
 };
@@ -1286,11 +1293,13 @@ class LinearScanAllocator final : public RegisterAllocator {
                        RangeWithRegister::Equals>;
 
   void MaybeUndoPreviousSplit(LiveRange* range);
-  void SpillNotLiveRanges(RangeWithRegisterSet& to_be_live,
-                          LifetimePosition position, SpillMode spill_mode);
+  void SpillNotLiveRanges(
+      RangeWithRegisterSet& to_be_live,  // NOLINT(runtime/references)
+      LifetimePosition position, SpillMode spill_mode);
   LiveRange* AssignRegisterOnReload(LiveRange* range, int reg);
-  void ReloadLiveRanges(RangeWithRegisterSet& to_be_live,
-                        LifetimePosition position);
+  void ReloadLiveRanges(
+      RangeWithRegisterSet& to_be_live,  // NOLINT(runtime/references)
+      LifetimePosition position);
 
   void UpdateDeferredFixedRanges(SpillMode spill_mode, InstructionBlock* block);
   bool BlockIsDeferredOrImmediatePredecessorIsNotDeferred(

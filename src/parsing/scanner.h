@@ -406,13 +406,6 @@ class V8_EXPORT_PRIVATE Scanner {
 
   bool FoundHtmlComment() const { return found_html_comment_; }
 
-  bool allow_harmony_numeric_separator() const {
-    return allow_harmony_numeric_separator_;
-  }
-  void set_allow_harmony_numeric_separator(bool allow) {
-    allow_harmony_numeric_separator_ = allow;
-  }
-
   const Utf16CharacterStream* stream() const { return source_; }
 
   // If the next characters in the stream are "#!", the line is skipped.
@@ -646,9 +639,9 @@ class V8_EXPORT_PRIVATE Scanner {
 
   bool ScanDigitsWithNumericSeparators(bool (*predicate)(uc32 ch),
                                        bool is_check_first_digit);
-  bool ScanDecimalDigits();
+  bool ScanDecimalDigits(bool allow_numeric_separator);
   // Optimized function to scan decimal number as Smi.
-  bool ScanDecimalAsSmi(uint64_t* value);
+  bool ScanDecimalAsSmi(uint64_t* value, bool allow_numeric_separator);
   bool ScanDecimalAsSmiWithNumericSeparators(uint64_t* value);
   bool ScanHexDigits();
   bool ScanBinaryDigits();
@@ -719,9 +712,6 @@ class V8_EXPORT_PRIVATE Scanner {
 
   // Whether this scanner encountered an HTML comment.
   bool found_html_comment_;
-
-  // Harmony flags to allow ESNext features.
-  bool allow_harmony_numeric_separator_;
 
   const bool is_module_;
 

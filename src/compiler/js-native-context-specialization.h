@@ -114,9 +114,9 @@ class V8_EXPORT_PRIVATE JSNativeContextSpecialization final
   Reduction ReduceGlobalAccess(Node* node, Node* receiver, Node* value,
                                NameRef const& name, AccessMode access_mode,
                                Node* key, PropertyCellRef const& property_cell);
-  Reduction ReduceKeyedLoadFromHeapConstant(Node* node, Node* key,
-                                            AccessMode access_mode,
-                                            KeyedAccessLoadMode load_mode);
+  Reduction ReduceElementLoadFromHeapConstant(Node* node, Node* key,
+                                              AccessMode access_mode,
+                                              KeyedAccessLoadMode load_mode);
   Reduction ReduceElementAccessOnString(Node* node, Node* index, Node* value,
                                         KeyedAccessMode const& keyed_mode);
 
@@ -234,7 +234,7 @@ class V8_EXPORT_PRIVATE JSNativeContextSpecialization final
     kMayBeInPrototypeChain
   };
   InferHasInPrototypeChainResult InferHasInPrototypeChain(
-      Node* receiver, Node* effect, Handle<HeapObject> prototype);
+      Node* receiver, Node* effect, HeapObjectRef const& prototype);
 
   Graph* graph() const;
   JSGraph* jsgraph() const { return jsgraph_; }

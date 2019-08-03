@@ -10,6 +10,7 @@
 #include "src/torque/implementation-visitor.h"
 #include "src/torque/parameter-difference.h"
 #include "src/torque/server-data.h"
+#include "src/torque/type-inference.h"
 #include "src/torque/type-visitor.h"
 
 namespace v8 {
@@ -1110,29 +1111,6 @@ const Type* ImplementationVisitor::Visit(ReturnStatement* stmt) {
   return TypeOracle::GetNeverType();
 }
 
-VisitResult ImplementationVisitor::TemporaryUninitializedStruct(
-    const StructType* struct_type, const std::string& reason) {
-  StackRange range = assembler().TopRange(0);
-  for (const Field& f : struct_type->fields()) {
-    if (const StructType* struct_type =
-            StructType::DynamicCast(f.name_and_type.type)) {
-      range.Extend(
-          TemporaryUninitializedStruct(struct_type, reason).stack_range());
-    } else {
-      std::string descriptor = "uninitialized field '" + f.name_and_type.name +
-                               "' declared at " + PositionAsString(f.pos) +
-                               " (" + reason + ")";
-      TypeVector lowered_types = LowerType(f.name_and_type.type);
-      for (const Type* type : lowered_types) {
-        assembler().Emit(PushUninitializedInstruction{
-            TypeOracle::GetTopType(descriptor, type)});
-      }
-      range.Extend(assembler().TopRange(lowered_types.size()));
-    }
-  }
-  return VisitResult(struct_type, range);
-}
-
 VisitResult ImplementationVisitor::Visit(TryLabelExpression* expr) {
   size_t parameter_count = expr->label_block->parameters.names.size();
   std::vector<VisitResult> parameters;
@@ -1211,15 +1189,38 @@ VisitResult ImplementationVisitor::Visit(StatementExpression* expr) {
   return VisitResult{Visit(expr->statement), assembler().TopRange(0)};
 }
 
+void ImplementationVisitor::CheckInitializersWellformed(
+    const std::string& aggregate_name,
+    const std::vector<Field>& aggregate_fields,
+    const std::vector<NameAndExpression>& initializers,
+    bool ignore_first_field) {
+  size_t fields_offset = ignore_first_field ? 1 : 0;
+  size_t fields_size = aggregate_fields.size() - fields_offset;
+  for (size_t i = 0; i < std::min(fields_size, initializers.size()); i++) {
+    const std::string& field_name =
+        aggregate_fields[i + fields_offset].name_and_type.name;
+    Identifier* found_name = initializers[i].name;
+    if (field_name != found_name->value) {
+      Error("Expected field name \"", field_name, "\" instead of \"",
+            found_name->value, "\"")
+          .Position(found_name->pos)
+          .Throw();
+    }
+  }
+  if (fields_size != initializers.size()) {
+    ReportError("expected ", fields_size, " initializers for ", aggregate_name,
+                " found ", initializers.size());
+  }
+}
+
 InitializerResults ImplementationVisitor::VisitInitializerResults(
-    const AggregateType* current_aggregate,
+    const ClassType* class_type,
     const std::vector<NameAndExpression>& initializers) {
   InitializerResults result;
   for (const NameAndExpression& initializer : initializers) {
     result.names.push_back(initializer.name);
     Expression* e = initializer.expression;
-    const Field& field =
-        current_aggregate->LookupField(initializer.name->value);
+    const Field& field = class_type->LookupField(initializer.name->value);
     auto field_index = field.index;
     if (SpreadExpression* s = SpreadExpression::DynamicCast(e)) {
       if (!field_index) {
@@ -1238,54 +1239,30 @@ InitializerResults ImplementationVisitor::VisitInitializerResults(
   return result;
 }
 
-size_t ImplementationVisitor::InitializeAggregateHelper(
-    const AggregateType* aggregate_type, VisitResult allocate_result,
+void ImplementationVisitor::InitializeClass(
+    const ClassType* class_type, VisitResult allocate_result,
     const InitializerResults& initializer_results) {
-  const ClassType* current_class = ClassType::DynamicCast(aggregate_type);
-  size_t current = 0;
-  if (current_class) {
-    const ClassType* super = current_class->GetSuperClass();
-    if (super) {
-      current = InitializeAggregateHelper(super, allocate_result,
-                                          initializer_results);
-    }
+  if (const ClassType* super = class_type->GetSuperClass()) {
+    InitializeClass(super, allocate_result, initializer_results);
   }
 
-  for (Field f : aggregate_type->fields()) {
-    if (current == initializer_results.field_value_map.size()) {
-      ReportError("insufficient number of initializers for ",
-                  aggregate_type->name());
-    }
+  for (Field f : class_type->fields()) {
     VisitResult current_value =
         initializer_results.field_value_map.at(f.name_and_type.name);
-    Identifier* fieldname = initializer_results.names[current];
-    if (fieldname->value != f.name_and_type.name) {
-      CurrentSourcePosition::Scope scope(fieldname->pos);
-      ReportError("Expected fieldname \"", f.name_and_type.name,
-                  "\" instead of \"", fieldname->value, "\"");
-    }
-    if (aggregate_type->IsClassType()) {
-      if (f.index) {
-        InitializeFieldFromSpread(allocate_result, f, initializer_results);
-      } else {
-        allocate_result.SetType(aggregate_type);
-        GenerateCopy(allocate_result);
-        assembler().Emit(CreateFieldReferenceInstruction{
-            ClassType::cast(aggregate_type), f.name_and_type.name});
-        VisitResult heap_reference(
-            TypeOracle::GetReferenceType(f.name_and_type.type),
-            assembler().TopRange(2));
-        GenerateAssignToLocation(
-            LocationReference::HeapReference(heap_reference), current_value);
-      }
+    if (f.index) {
+      InitializeFieldFromSpread(allocate_result, f, initializer_results);
     } else {
-      LocationReference struct_field_ref = LocationReference::VariableAccess(
-          ProjectStructField(allocate_result, f.name_and_type.name));
-      GenerateAssignToLocation(struct_field_ref, current_value);
+      allocate_result.SetType(class_type);
+      GenerateCopy(allocate_result);
+      assembler().Emit(CreateFieldReferenceInstruction{
+          ClassType::cast(class_type), f.name_and_type.name});
+      VisitResult heap_reference(
+          TypeOracle::GetReferenceType(f.name_and_type.type),
+          assembler().TopRange(2));
+      GenerateAssignToLocation(LocationReference::HeapReference(heap_reference),
+                               current_value);
     }
-    ++current;
   }
-  return current;
 }
 
 void ImplementationVisitor::InitializeFieldFromSpread(
@@ -1302,17 +1279,6 @@ void ImplementationVisitor::InitializeFieldFromSpread(
   assign_arguments.parameters.push_back(iterator);
   GenerateCall("%InitializeFieldsFromIterator", assign_arguments,
                {field.aggregate, index.type, iterator.type()});
-}
-
-void ImplementationVisitor::InitializeAggregate(
-    const AggregateType* aggregate_type, VisitResult allocate_result,
-    const InitializerResults& initializer_results) {
-  size_t consumed_initializers = InitializeAggregateHelper(
-      aggregate_type, allocate_result, initializer_results);
-  if (consumed_initializers != initializer_results.field_value_map.size()) {
-    ReportError("more initializers than fields present in ",
-                aggregate_type->name());
-  }
 }
 
 VisitResult ImplementationVisitor::AddVariableObjectSize(
@@ -1397,6 +1363,11 @@ VisitResult ImplementationVisitor::Visit(NewExpression* expr) {
     initializer_results.field_value_map[map_field.name_and_type.name] =
         object_map;
   }
+
+  CheckInitializersWellformed(class_type->name(),
+                              class_type->ComputeAllFields(),
+                              expr->initializers, !class_type->IsExtern());
+
   Arguments size_arguments;
   size_arguments.parameters.push_back(object_map);
   VisitResult object_size = GenerateCall("%GetAllocationBaseSize",
@@ -1411,7 +1382,7 @@ VisitResult ImplementationVisitor::Visit(NewExpression* expr) {
       GenerateCall("%Allocate", allocate_arguments, {class_type}, false);
   DCHECK(allocate_result.IsOnStack());
 
-  InitializeAggregate(class_type, allocate_result, initializer_results);
+  InitializeClass(class_type, allocate_result, initializer_results);
 
   return stack_scope.Yield(allocate_result);
 }
@@ -1582,7 +1553,9 @@ namespace {
 void FailCallableLookup(const std::string& reason, const QualifiedName& name,
                         const TypeVector& parameter_types,
                         const std::vector<Binding<LocalLabel>*>& labels,
-                        const std::vector<Signature>& candidates) {
+                        const std::vector<Signature>& candidates,
+                        const std::vector<std::tuple<Generic*, const char*>>
+                            inapplicable_generics) {
   std::stringstream stream;
   stream << "\n" << reason << ": \n  " << name << "(" << parameter_types << ")";
   if (labels.size() != 0) {
@@ -1596,12 +1569,22 @@ void FailCallableLookup(const std::string& reason, const QualifiedName& name,
     stream << "\n  " << name;
     PrintSignature(stream, signature, false);
   }
+  if (inapplicable_generics.size() != 0) {
+    stream << "\nfailed to instantiate all of these generic declarations:";
+    for (auto& failure : inapplicable_generics) {
+      Generic* generic;
+      const char* reason;
+      std::tie(generic, reason) = failure;
+      stream << "\n  " << generic->name() << " defined at "
+             << generic->Position() << ":\n    " << reason << "\n";
+    }
+  }
   ReportError(stream.str());
 }
 
-Callable* GetOrCreateSpecialization(const SpecializationKey& key) {
+Callable* GetOrCreateSpecialization(const SpecializationKey<Generic>& key) {
   if (base::Optional<Callable*> specialization =
-          key.generic->GetSpecialization(key.specialized_types)) {
+          key.generic->specializations().Get(key.specialized_types)) {
     return *specialization;
   }
   return DeclarationVisitor::SpecializeImplicit(key);
@@ -1655,16 +1638,20 @@ Callable* ImplementationVisitor::LookupCallable(
 
   std::vector<Declarable*> overloads;
   std::vector<Signature> overload_signatures;
+  std::vector<std::tuple<Generic*, const char*>> inapplicable_generics;
   for (auto* declarable : declaration_container) {
     if (Generic* generic = Generic::DynamicCast(declarable)) {
-      base::Optional<TypeVector> inferred_specialization_types =
-          generic->InferSpecializationTypes(specialization_types,
-                                            parameter_types);
-      if (!inferred_specialization_types) continue;
+      TypeArgumentInference inference = generic->InferSpecializationTypes(
+          specialization_types, parameter_types);
+      if (inference.HasFailed()) {
+        inapplicable_generics.push_back(
+            std::make_tuple(generic, inference.GetFailureReason()));
+        continue;
+      }
       overloads.push_back(generic);
       overload_signatures.push_back(
           DeclarationVisitor::MakeSpecializedSignature(
-              SpecializationKey{generic, *inferred_specialization_types}));
+              SpecializationKey<Generic>{generic, inference.GetResult()}));
     } else if (Callable* callable = Callable::DynamicCast(declarable)) {
       overloads.push_back(callable);
       overload_signatures.push_back(callable->signature());
@@ -1683,7 +1670,7 @@ Callable* ImplementationVisitor::LookupCallable(
     }
   }
 
-  if (overloads.empty()) {
+  if (overloads.empty() && inapplicable_generics.empty()) {
     if (silence_errors) return nullptr;
     std::stringstream stream;
     stream << "no matching declaration found for " << name;
@@ -1691,7 +1678,8 @@ Callable* ImplementationVisitor::LookupCallable(
   } else if (candidates.empty()) {
     if (silence_errors) return nullptr;
     FailCallableLookup("cannot find suitable callable with name", name,
-                       parameter_types, labels, overload_signatures);
+                       parameter_types, labels, overload_signatures,
+                       inapplicable_generics);
   }
 
   auto is_better_candidate = [&](size_t a, size_t b) {
@@ -1712,14 +1700,15 @@ Callable* ImplementationVisitor::LookupCallable(
         candidate_signatures.push_back(overload_signatures[i]);
       }
       FailCallableLookup("ambiguous callable ", name, parameter_types, labels,
-                         candidate_signatures);
+                         candidate_signatures, inapplicable_generics);
     }
   }
 
   if (Generic* generic = Generic::DynamicCast(overloads[best])) {
+    TypeArgumentInference inference = generic->InferSpecializationTypes(
+        specialization_types, parameter_types);
     result = GetOrCreateSpecialization(
-        SpecializationKey{generic, *generic->InferSpecializationTypes(
-                                       specialization_types, parameter_types)});
+        SpecializationKey<Generic>{generic, inference.GetResult()});
   } else {
     result = Callable::cast(overloads[best]);
   }
@@ -1783,24 +1772,36 @@ VisitResult ImplementationVisitor::GenerateCopy(const VisitResult& to_copy) {
 
 VisitResult ImplementationVisitor::Visit(StructExpression* expr) {
   StackScope stack_scope(this);
-  const Type* raw_type = TypeVisitor::ComputeType(expr->type);
-  if (!raw_type->IsStructType()) {
-    ReportError(*raw_type, " is not a struct but used like one");
+
+  auto& initializers = expr->initializers;
+  std::vector<VisitResult> values;
+  std::vector<const Type*> term_argument_types;
+  values.reserve(initializers.size());
+  term_argument_types.reserve(initializers.size());
+
+  // Compute values and types of all initializer arguments
+  for (const NameAndExpression& initializer : initializers) {
+    VisitResult value = Visit(initializer.expression);
+    values.push_back(value);
+    term_argument_types.push_back(value.type());
   }
 
-  const StructType* struct_type = StructType::cast(raw_type);
+  // Compute and check struct type from given struct name and argument types
+  const StructType* struct_type = TypeVisitor::ComputeTypeForStructExpression(
+      expr->type, term_argument_types);
+  CheckInitializersWellformed(struct_type->name(), struct_type->fields(),
+                              initializers);
 
-  InitializerResults initialization_results =
-      ImplementationVisitor::VisitInitializerResults(struct_type,
-                                                     expr->initializers);
+  // Implicitly convert values and thereby build the struct on the stack
+  StackRange struct_range = assembler().TopRange(0);
+  auto& fields = struct_type->fields();
+  for (size_t i = 0; i < values.size(); i++) {
+    values[i] =
+        GenerateImplicitConvert(fields[i].name_and_type.type, values[i]);
+    struct_range.Extend(values[i].stack_range());
+  }
 
-  // Push uninitialized 'this'
-  VisitResult result = TemporaryUninitializedStruct(
-      struct_type, "it's not initialized in the struct " + struct_type->name());
-
-  InitializeAggregate(struct_type, result, initialization_results);
-
-  return stack_scope.Yield(result);
+  return stack_scope.Yield(VisitResult(struct_type, struct_range));
 }
 
 LocationReference ImplementationVisitor::GetLocationReference(
@@ -1927,8 +1928,9 @@ LocationReference ImplementationVisitor::GetLocationReference(
   }
   if (expr->generic_arguments.size() != 0) {
     Generic* generic = Declarations::LookupUniqueGeneric(name);
-    Callable* specialization = GetOrCreateSpecialization(SpecializationKey{
-        generic, TypeVisitor::ComputeTypeVector(expr->generic_arguments)});
+    Callable* specialization =
+        GetOrCreateSpecialization(SpecializationKey<Generic>{
+            generic, TypeVisitor::ComputeTypeVector(expr->generic_arguments)});
     if (Builtin* builtin = Builtin::DynamicCast(specialization)) {
       DCHECK(!builtin->IsExternal());
       return LocationReference::Temporary(GetBuiltinCode(builtin),
@@ -1963,8 +1965,8 @@ LocationReference ImplementationVisitor::GetLocationReference(
 LocationReference ImplementationVisitor::GetLocationReference(
     DereferenceExpression* expr) {
   VisitResult ref = Visit(expr->reference);
-  const ReferenceType* type = ReferenceType::DynamicCast(ref.type());
-  if (!type) {
+  if (!StructType::MatchUnaryGeneric(ref.type(),
+                                     TypeOracle::GetReferenceGeneric())) {
     ReportError("Operator * expects a reference but found a value of type ",
                 *ref.type());
   }
@@ -2117,6 +2119,18 @@ VisitResult ImplementationVisitor::GenerateCall(
   }
 
   const Type* return_type = callable->signature().return_type;
+
+  if (is_tailcall) {
+    if (Builtin* builtin = Builtin::DynamicCast(CurrentCallable::Get())) {
+      const Type* outer_return_type = builtin->signature().return_type;
+      if (!return_type->IsSubtypeOf(outer_return_type)) {
+        Error("Cannot tailcall, type of result is ", *return_type,
+              " but should be a subtype of ", *outer_return_type, ".");
+      }
+    } else {
+      Error("Tail calls are only allowed from builtins");
+    }
+  }
 
   std::vector<VisitResult> converted_arguments;
   StackRange argument_range = assembler().TopRange(0);
@@ -2530,10 +2544,6 @@ StackRange ImplementationVisitor::LowerParameter(
       range.Extend(parameter_range);
     }
     return range;
-  } else if (type->IsReferenceType()) {
-    lowered_parameters->Push(parameter_name + ".object");
-    lowered_parameters->Push(parameter_name + ".offset");
-    return lowered_parameters->TopRange(2);
   } else {
     lowered_parameters->Push(parameter_name);
     return lowered_parameters->TopRange(1);
@@ -2658,73 +2668,10 @@ void ImplementationVisitor::Visit(Declarable* declarable) {
     case Declarable::kExternConstant:
     case Declarable::kNamespace:
     case Declarable::kGeneric:
+    case Declarable::kGenericStructType:
       return;
   }
 }
-
-namespace {
-class IfDefScope {
- public:
-  IfDefScope(std::ostream& os, std::string d) : os_(os), d_(std::move(d)) {
-    os_ << "#ifdef " << d_ << "\n";
-  }
-  ~IfDefScope() { os_ << "#endif  // " << d_ << "\n"; }
-
- private:
-  std::ostream& os_;
-  std::string d_;
-};
-
-class NamespaceScope {
- public:
-  NamespaceScope(std::ostream& os,
-                 std::initializer_list<std::string> namespaces)
-      : os_(os), d_(std::move(namespaces)) {
-    for (const std::string& s : d_) {
-      os_ << "namespace " << s << " {\n";
-    }
-  }
-  ~NamespaceScope() {
-    for (auto i = d_.rbegin(); i != d_.rend(); ++i) {
-      os_ << "}  // namespace " << *i << "\n";
-    }
-  }
-
- private:
-  std::ostream& os_;
-  std::vector<std::string> d_;
-};
-
-class IncludeGuardScope {
- public:
-  IncludeGuardScope(std::ostream& os, std::string file_name)
-      : os_(os),
-        d_("V8_GEN_TORQUE_GENERATED_" + CapifyStringWithUnderscores(file_name) +
-           "_") {
-    os_ << "#ifndef " << d_ << "\n";
-    os_ << "#define " << d_ << "\n\n";
-  }
-  ~IncludeGuardScope() { os_ << "#endif  // " << d_ << "\n"; }
-
- private:
-  std::ostream& os_;
-  std::string d_;
-};
-
-class IncludeObjectMacrosScope {
- public:
-  explicit IncludeObjectMacrosScope(std::ostream& os) : os_(os) {
-    os_ << "\n// Has to be the last include (doesn't have include guards):\n"
-           "#include \"src/objects/object-macros.h\"\n";
-  }
-  ~IncludeObjectMacrosScope() {
-    os_ << "\n#include \"src/objects/object-macros-undef.h\"\n";
-  }
-
- private:
-  std::ostream& os_;
-};
-}  // namespace
 
 void ImplementationVisitor::GenerateBuiltinDefinitions(
     const std::string& output_directory) {
@@ -3055,8 +3002,8 @@ class ClassFieldOffsetGenerator : public FieldOffsetsGenerator {
     hdr_ << "  static constexpr int " << field << " = " << previous_field_end_
          << ";\n";
     hdr_ << "  static constexpr int " << field_end << " = " << field << " + "
-         << size_string << ";\n";
-    previous_field_end_ = field_end;
+         << size_string << " - 1;\n";
+    previous_field_end_ = field_end + " + 1";
   }
   virtual void WriteMarker(const std::string& marker) {
     hdr_ << "  static constexpr int " << marker << " = " << previous_field_end_
@@ -3671,13 +3618,13 @@ void ImplementationVisitor::GenerateCSATypes(
 
     NamespaceScope h_namespaces(h_contents, {"v8", "internal"});
 
-    for (auto& declarable : GlobalContext::AllDeclarables()) {
-      TypeAlias* alias = TypeAlias::DynamicCast(declarable.get());
-      if (!alias || alias->IsRedeclaration()) continue;
-      const StructType* struct_type = StructType::DynamicCast(alias->type());
+    // Generates headers for all structs in a topologically-sorted order, since
+    // TypeOracle keeps them in the order of their resolution
+    for (auto& type : *TypeOracle::GetAggregateTypes()) {
+      const StructType* struct_type = StructType::DynamicCast(type.get());
       if (!struct_type) continue;
-      const std::string& name = struct_type->name();
-      h_contents << "struct TorqueStruct" << name << " {\n";
+      h_contents << "struct " << struct_type->GetGeneratedTypeNameImpl()
+                 << " {\n";
       for (auto& field : struct_type->fields()) {
         h_contents << "  " << field.name_and_type.type->GetGeneratedTypeName();
         h_contents << " " << field.name_and_type.name << ";\n";

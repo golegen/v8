@@ -43,7 +43,6 @@ class BigInt;
 class CallInterfaceDescriptor;
 class Callable;
 class Factory;
-class FinalizationGroupCleanupJobTask;
 class InterpreterData;
 class Isolate;
 class JSAsyncFunctionObject;
@@ -747,10 +746,7 @@ class V8_EXPORT_PRIVATE CodeAssembler {
                            code_assembler_->SmiConstant(
                                static_cast<int>(ObjectTypeOf<A>::value))),
             std::make_pair(MachineType::AnyTagged(),
-                           code_assembler_->StringConstant(
-                               (location_ + std::string("\n") +
-                                code_assembler_->CSADebugHint())
-                                   .c_str())));
+                           code_assembler_->StringConstant(location_)));
       }
 #endif
       return TNode<A>::UncheckedCast(node_);
@@ -856,12 +852,10 @@ class V8_EXPORT_PRIVATE CodeAssembler {
     return value ? Int32TrueConstant() : Int32FalseConstant();
   }
 
-  // TODO(jkummerow): The style guide wants pointers for output parameters.
-  // https://google.github.io/styleguide/cppguide.html#Output_Parameters
-  bool ToInt32Constant(Node* node, int32_t& out_value);
-  bool ToInt64Constant(Node* node, int64_t& out_value);
+  bool ToInt32Constant(Node* node, int32_t* out_value);
+  bool ToInt64Constant(Node* node, int64_t* out_value);
+  bool ToIntPtrConstant(Node* node, intptr_t* out_value);
   bool ToSmiConstant(Node* node, Smi* out_value);
-  bool ToIntPtrConstant(Node* node, intptr_t& out_value);
 
   bool IsUndefinedConstant(TNode<Object> node);
   bool IsNullConstant(TNode<Object> node);
@@ -890,7 +884,7 @@ class V8_EXPORT_PRIVATE CodeAssembler {
 
   void ReturnRaw(Node* value);
 
-  void DebugAbort(Node* message);
+  void AbortCSAAssert(Node* message);
   void DebugBreak();
   void Unreachable();
   void Comment(const char* msg) {
@@ -1486,8 +1480,6 @@ class V8_EXPORT_PRIVATE CodeAssembler {
   // Exception handling support.
   void GotoIfException(Node* node, Label* if_exception,
                        Variable* exception_var = nullptr);
-
-  std::string CSADebugHint();
 
   // Helpers which delegate to RawMachineAssembler.
   Factory* factory() const;

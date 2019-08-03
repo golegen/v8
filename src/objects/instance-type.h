@@ -34,11 +34,16 @@ enum StringRepresentationTag {
 };
 const uint32_t kIsIndirectStringMask = 1 << 0;
 const uint32_t kIsIndirectStringTag = 1 << 0;
+// NOLINTNEXTLINE(runtime/references) (false positive)
 STATIC_ASSERT((kSeqStringTag & kIsIndirectStringMask) == 0);
+// NOLINTNEXTLINE(runtime/references) (false positive)
 STATIC_ASSERT((kExternalStringTag & kIsIndirectStringMask) == 0);
+// NOLINTNEXTLINE(runtime/references) (false positive)
 STATIC_ASSERT((kConsStringTag & kIsIndirectStringMask) == kIsIndirectStringTag);
+// NOLINTNEXTLINE(runtime/references) (false positive)
 STATIC_ASSERT((kSlicedStringTag & kIsIndirectStringMask) ==
               kIsIndirectStringTag);
+// NOLINTNEXTLINE(runtime/references) (false positive)
 STATIC_ASSERT((kThinStringTag & kIsIndirectStringMask) == kIsIndirectStringTag);
 
 // For strings, bit 3 indicates whether the string consists of two-byte
@@ -176,8 +181,7 @@ enum InstanceType : uint16_t {
   CALLBACK_TASK_TYPE,
   PROMISE_FULFILL_REACTION_JOB_TASK_TYPE,
   PROMISE_REJECT_REACTION_JOB_TASK_TYPE,
-  PROMISE_RESOLVE_THENABLE_JOB_TASK_TYPE,
-  FINALIZATION_GROUP_CLEANUP_JOB_TASK_TYPE,  // LAST_MICROTASK_TYPE
+  PROMISE_RESOLVE_THENABLE_JOB_TASK_TYPE,  // LAST_MICROTASK_TYPE
 
 #define MAKE_TORQUE_INSTANCE_TYPE(V) V,
   TORQUE_DEFINED_INSTANCE_TYPES(MAKE_TORQUE_INSTANCE_TYPE)
@@ -341,7 +345,7 @@ enum InstanceType : uint16_t {
   LAST_CONTEXT_TYPE = WITH_CONTEXT_TYPE,
   // Boundaries for testing if given HeapObject is a subclass of Microtask.
   FIRST_MICROTASK_TYPE = CALLABLE_TASK_TYPE,
-  LAST_MICROTASK_TYPE = FINALIZATION_GROUP_CLEANUP_JOB_TASK_TYPE,
+  LAST_MICROTASK_TYPE = PROMISE_RESOLVE_THENABLE_JOB_TASK_TYPE,
   // Boundaries of module record types
   FIRST_MODULE_TYPE = SOURCE_TEXT_MODULE_TYPE,
   LAST_MODULE_TYPE = SYNTHETIC_MODULE_TYPE,
@@ -377,6 +381,7 @@ enum InstanceType : uint16_t {
 constexpr InstanceType LAST_STRING_TYPE =
     static_cast<InstanceType>(FIRST_NONSTRING_TYPE - 1);
 
+// NOLINTNEXTLINE(runtime/references) (false positive)
 STATIC_ASSERT((FIRST_NONSTRING_TYPE & kIsNotStringMask) != kStringTag);
 STATIC_ASSERT(JS_OBJECT_TYPE == Internals::kJSObjectType);
 STATIC_ASSERT(JS_API_OBJECT_TYPE == Internals::kJSApiObjectType);

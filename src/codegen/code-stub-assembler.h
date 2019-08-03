@@ -12,7 +12,6 @@
 #include "src/common/globals.h"
 #include "src/common/message-template.h"
 #include "src/compiler/code-assembler.h"
-#include "src/execution/frames.h"
 #include "src/objects/arguments.h"
 #include "src/objects/bigint.h"
 #include "src/objects/objects.h"
@@ -39,7 +38,6 @@ enum class PrimitiveType { kBoolean, kNumber, kString, kSymbol };
     PromiseSpeciesProtector)                                               \
   V(TypedArraySpeciesProtector, typed_array_species_protector,             \
     TypedArraySpeciesProtector)                                            \
-  V(RegExpSpeciesProtector, regexp_species_protector, RegExpSpeciesProtector)
 
 #define HEAP_IMMUTABLE_IMMOVABLE_OBJECT_LIST(V)                                \
   V(AccessorInfoMap, accessor_info_map, AccessorInfoMap)                       \
@@ -111,59 +109,44 @@ enum class PrimitiveType { kBoolean, kNumber, kString, kSymbol };
 #endif
 
 #ifdef DEBUG
-// Add stringified versions to the given values, except the first. That is,
-// transform
-//   x, a, b, c, d, e, f
-// to
-//   a, "a", b, "b", c, "c", d, "d", e, "e", f, "f"
-//
-// __VA_ARGS__  is ignored to allow the caller to pass through too many
-// parameters, and the first element is ignored to support having no extra
-// values without empty __VA_ARGS__ (which cause all sorts of problems with
-// extra commas).
-#define CSA_ASSERT_STRINGIFY_EXTRA_VALUES_5(_, v1, v2, v3, v4, v5, ...) \
-  v1, #v1, v2, #v2, v3, #v3, v4, #v4, v5, #v5
+// CSA_ASSERT_ARGS generates an
+// std::initializer_list<CodeStubAssembler::ExtraNode> from __VA_ARGS__. It
+// currently supports between 0 and 2 arguments.
 
-// Stringify the given variable number of arguments. The arguments are trimmed
-// to 5 if there are too many, and padded with nullptr if there are not enough.
-#define CSA_ASSERT_STRINGIFY_EXTRA_VALUES(...)                                \
-  CSA_ASSERT_STRINGIFY_EXTRA_VALUES_5(__VA_ARGS__, nullptr, nullptr, nullptr, \
-                                      nullptr, nullptr)
-
-#define CSA_ASSERT_GET_FIRST(x, ...) (x)
-#define CSA_ASSERT_GET_FIRST_STR(x, ...) #x
+// clang-format off
+#define CSA_ASSERT_0_ARGS(...) {}
+#define CSA_ASSERT_1_ARG(a, ...) {{a, #a}}
+#define CSA_ASSERT_2_ARGS(a, b, ...) {{a, #a}, {b, #b}}
+// clang-format on
+#define SWITCH_CSA_ASSERT_ARGS(dummy, a, b, FUNC, ...) FUNC(a, b)
+#define CSA_ASSERT_ARGS(...)                                        \
+  CALL(SWITCH_CSA_ASSERT_ARGS, (, ##__VA_ARGS__, CSA_ASSERT_2_ARGS, \
+                                CSA_ASSERT_1_ARG, CSA_ASSERT_0_ARGS))
+// Workaround for MSVC to skip comma in empty __VA_ARGS__.
+#define CALL(x, y) x y
 
 // CSA_ASSERT(csa, <condition>, <extra values to print...>)
 
-// We have to jump through some hoops to allow <extra values to print...> to be
-// empty.
-#define CSA_ASSERT(csa, ...)                                             \
-  (csa)->Assert(                                                         \
-      [&]() -> compiler::Node* {                                         \
-        return implicit_cast<compiler::SloppyTNode<Word32T>>(            \
-            EXPAND(CSA_ASSERT_GET_FIRST(__VA_ARGS__)));                  \
-      },                                                                 \
-      EXPAND(CSA_ASSERT_GET_FIRST_STR(__VA_ARGS__)), __FILE__, __LINE__, \
-      CSA_ASSERT_STRINGIFY_EXTRA_VALUES(__VA_ARGS__))
+#define CSA_ASSERT(csa, condition_node, ...)                         \
+  (csa)->Assert(condition_node, #condition_node, __FILE__, __LINE__, \
+                CSA_ASSERT_ARGS(__VA_ARGS__))
 
 // CSA_ASSERT_BRANCH(csa, [](Label* ok, Label* not_ok) {...},
 //     <extra values to print...>)
 
-#define CSA_ASSERT_BRANCH(csa, ...)                                      \
-  (csa)->Assert(EXPAND(CSA_ASSERT_GET_FIRST(__VA_ARGS__)),               \
-                EXPAND(CSA_ASSERT_GET_FIRST_STR(__VA_ARGS__)), __FILE__, \
-                __LINE__, CSA_ASSERT_STRINGIFY_EXTRA_VALUES(__VA_ARGS__))
+#define CSA_ASSERT_BRANCH(csa, gen, ...) \
+  (csa)->Assert(gen, #gen, __FILE__, __LINE__, CSA_ASSERT_ARGS(__VA_ARGS__))
 
-#define CSA_ASSERT_JS_ARGC_OP(csa, Op, op, expected)                       \
-  (csa)->Assert(                                                           \
-      [&]() -> compiler::Node* {                                           \
-        compiler::Node* const argc =                                       \
-            (csa)->Parameter(Descriptor::kJSActualArgumentsCount);         \
-        return (csa)->Op(argc, (csa)->Int32Constant(expected));            \
-      },                                                                   \
-      "argc " #op " " #expected, __FILE__, __LINE__,                       \
-      SmiFromInt32((csa)->Parameter(Descriptor::kJSActualArgumentsCount)), \
-      "argc")
+#define CSA_ASSERT_JS_ARGC_OP(csa, Op, op, expected)                         \
+  (csa)->Assert(                                                             \
+      [&]() -> compiler::Node* {                                             \
+        compiler::Node* const argc =                                         \
+            (csa)->Parameter(Descriptor::kJSActualArgumentsCount);           \
+        return (csa)->Op(argc, (csa)->Int32Constant(expected));              \
+      },                                                                     \
+      "argc " #op " " #expected, __FILE__, __LINE__,                         \
+      {{SmiFromInt32((csa)->Parameter(Descriptor::kJSActualArgumentsCount)), \
+        "argc"}})
 
 #define CSA_ASSERT_JS_ARGC_EQ(csa, expected) \
   CSA_ASSERT_JS_ARGC_OP(csa, Word32Equal, ==, expected)
@@ -284,7 +267,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
     } else {
       DCHECK_EQ(mode, ParameterMode::INTPTR_PARAMETERS);
       intptr_t constant;
-      if (ToIntPtrConstant(node, constant)) {
+      if (ToIntPtrConstant(node, &constant)) {
         *out = constant;
         return true;
       }
@@ -628,43 +611,28 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
 
   using BranchGenerator = std::function<void(Label*, Label*)>;
   using NodeGenerator = std::function<Node*()>;
+  using ExtraNode = std::pair<Node*, const char*>;
 
-  void Assert(const BranchGenerator& branch, const char* message = nullptr,
-              const char* file = nullptr, int line = 0,
-              Node* extra_node1 = nullptr, const char* extra_node1_name = "",
-              Node* extra_node2 = nullptr, const char* extra_node2_name = "",
-              Node* extra_node3 = nullptr, const char* extra_node3_name = "",
-              Node* extra_node4 = nullptr, const char* extra_node4_name = "",
-              Node* extra_node5 = nullptr, const char* extra_node5_name = "");
-  void Assert(const NodeGenerator& condition_body,
-              const char* message = nullptr, const char* file = nullptr,
-              int line = 0, Node* extra_node1 = nullptr,
-              const char* extra_node1_name = "", Node* extra_node2 = nullptr,
-              const char* extra_node2_name = "", Node* extra_node3 = nullptr,
-              const char* extra_node3_name = "", Node* extra_node4 = nullptr,
-              const char* extra_node4_name = "", Node* extra_node5 = nullptr,
-              const char* extra_node5_name = "");
-  void Check(const BranchGenerator& branch, const char* message = nullptr,
-             const char* file = nullptr, int line = 0,
-             Node* extra_node1 = nullptr, const char* extra_node1_name = "",
-             Node* extra_node2 = nullptr, const char* extra_node2_name = "",
-             Node* extra_node3 = nullptr, const char* extra_node3_name = "",
-             Node* extra_node4 = nullptr, const char* extra_node4_name = "",
-             Node* extra_node5 = nullptr, const char* extra_node5_name = "");
-  void Check(const NodeGenerator& condition_body, const char* message = nullptr,
-             const char* file = nullptr, int line = 0,
-             Node* extra_node1 = nullptr, const char* extra_node1_name = "",
-             Node* extra_node2 = nullptr, const char* extra_node2_name = "",
-             Node* extra_node3 = nullptr, const char* extra_node3_name = "",
-             Node* extra_node4 = nullptr, const char* extra_node4_name = "",
-             Node* extra_node5 = nullptr, const char* extra_node5_name = "");
-  void FailAssert(
-      const char* message = nullptr, const char* file = nullptr, int line = 0,
-      Node* extra_node1 = nullptr, const char* extra_node1_name = "",
-      Node* extra_node2 = nullptr, const char* extra_node2_name = "",
-      Node* extra_node3 = nullptr, const char* extra_node3_name = "",
-      Node* extra_node4 = nullptr, const char* extra_node4_name = "",
-      Node* extra_node5 = nullptr, const char* extra_node5_name = "");
+  void Assert(const BranchGenerator& branch, const char* message,
+              const char* file, int line,
+              std::initializer_list<ExtraNode> extra_nodes = {});
+  void Assert(const NodeGenerator& condition_body, const char* message,
+              const char* file, int line,
+              std::initializer_list<ExtraNode> extra_nodes = {});
+  void Assert(SloppyTNode<Word32T> condition_node, const char* message,
+              const char* file, int line,
+              std::initializer_list<ExtraNode> extra_nodes = {});
+  void Check(const BranchGenerator& branch, const char* message,
+             const char* file, int line,
+             std::initializer_list<ExtraNode> extra_nodes = {});
+  void Check(const NodeGenerator& condition_body, const char* message,
+             const char* file, int line,
+             std::initializer_list<ExtraNode> extra_nodes = {});
+  void Check(SloppyTNode<Word32T> condition_node, const char* message,
+             const char* file, int line,
+             std::initializer_list<ExtraNode> extra_nodes = {});
+  void FailAssert(const char* message, const char* file, int line,
+                  std::initializer_list<ExtraNode> extra_nodes = {});
 
   void FastCheck(TNode<BoolT> condition);
 
@@ -884,6 +852,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
 
   // Reference is the CSA-equivalent of a Torque reference value,
   // representing an inner pointer into a HeapObject.
+  // TODO(gsps): Remove in favor of flattened {Load,Store}Reference interface
   struct Reference {
     TNode<HeapObject> object;
     TNode<IntPtrT> offset;
@@ -952,6 +921,10 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
                                       InstanceType type);
   TNode<BoolT> TaggedDoesntHaveInstanceType(SloppyTNode<HeapObject> any_tagged,
                                             InstanceType type);
+
+  TNode<Word32T> IsStringWrapperElementsKind(TNode<Map> map);
+  void GotoIfMapHasSlowProperties(TNode<Map> map, Label* if_slow);
+
   // Load the properties backing store of a JSObject.
   TNode<HeapObject> LoadSlowProperties(SloppyTNode<JSObject> object);
   TNode<HeapObject> LoadFastProperties(SloppyTNode<JSObject> object);
@@ -977,6 +950,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
       SloppyTNode<WeakFixedArray> array);
   // Load the number of descriptors in DescriptorArray.
   TNode<Int32T> LoadNumberOfDescriptors(TNode<DescriptorArray> array);
+  // Load the number of own descriptors of a map.
+  TNode<Int32T> LoadNumberOfOwnDescriptors(TNode<Map> map);
   // Load the bit field of a Map.
   TNode<Int32T> LoadMapBitField(SloppyTNode<Map> map);
   // Load bit field 2 of a map.
@@ -1602,9 +1577,9 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
 
   TNode<NameDictionary> AllocateNameDictionary(int at_least_space_for);
   TNode<NameDictionary> AllocateNameDictionary(
-      TNode<IntPtrT> at_least_space_for);
+      TNode<IntPtrT> at_least_space_for, AllocationFlags = kNone);
   TNode<NameDictionary> AllocateNameDictionaryWithCapacity(
-      TNode<IntPtrT> capacity);
+      TNode<IntPtrT> capacity, AllocationFlags = kNone);
   TNode<NameDictionary> CopyNameDictionary(TNode<NameDictionary> dictionary,
                                            Label* large_object_fallback);
 
@@ -2135,9 +2110,11 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
   TNode<Int32T> TruncateHeapNumberValueToWord32(TNode<HeapNumber> object);
 
   // Conversions.
-  void TryHeapNumberToSmi(TNode<HeapNumber> number, TVariable<Smi>& output,
+  void TryHeapNumberToSmi(TNode<HeapNumber> number,
+                          TVariable<Smi>& output,  // NOLINT(runtime/references)
                           Label* if_smi);
-  void TryFloat64ToSmi(TNode<Float64T> number, TVariable<Smi>& output,
+  void TryFloat64ToSmi(TNode<Float64T> number,
+                       TVariable<Smi>& output,  // NOLINT(runtime/references)
                        Label* if_smi);
   TNode<Number> ChangeFloat64ToTagged(SloppyTNode<Float64T> value);
   TNode<Number> ChangeInt32ToTagged(SloppyTNode<Int32T> value);
@@ -2309,6 +2286,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
   TNode<BoolT> IsOneByteStringInstanceType(SloppyTNode<Int32T> instance_type);
   TNode<BoolT> IsPrimitiveInstanceType(SloppyTNode<Int32T> instance_type);
   TNode<BoolT> IsPrivateSymbol(SloppyTNode<HeapObject> object);
+  TNode<BoolT> IsPrivateName(SloppyTNode<Symbol> symbol);
   TNode<BoolT> IsPromiseCapability(SloppyTNode<HeapObject> object);
   TNode<BoolT> IsPropertyArray(SloppyTNode<HeapObject> object);
   TNode<BoolT> IsPropertyCell(SloppyTNode<HeapObject> object);
@@ -2354,7 +2332,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
   TNode<BoolT> IsPromiseThenProtectorCellInvalid();
   TNode<BoolT> IsArraySpeciesProtectorCellInvalid();
   TNode<BoolT> IsTypedArraySpeciesProtectorCellInvalid();
-  TNode<BoolT> IsRegExpSpeciesProtectorCellInvalid();
+  TNode<BoolT> IsRegExpSpeciesProtectorCellInvalid(
+      TNode<Context> native_context);
   TNode<BoolT> IsPromiseSpeciesProtectorCellInvalid();
 
   TNode<BoolT> IsMockArrayBufferAllocatorFlag() {
@@ -3103,7 +3082,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
   void EmitElementStore(Node* object, Node* key, Node* value,
                         ElementsKind elements_kind,
                         KeyedAccessStoreMode store_mode, Label* bailout,
-                        Node* context);
+                        Node* context,
+                        Variable* maybe_converted_value = nullptr);
 
   Node* CheckForCapacityGrow(Node* object, Node* elements, ElementsKind kind,
                              Node* length, Node* key, ParameterMode mode,
@@ -3347,12 +3327,6 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
   Node* IsPromiseHookEnabledOrHasAsyncEventDelegate();
   Node* IsPromiseHookEnabledOrDebugIsActiveOrHasAsyncEventDelegate();
 
-  // Helpers for StackFrame markers.
-  Node* MarkerIsFrameType(Node* marker_or_function,
-                          StackFrame::Type frame_type);
-  Node* MarkerIsNotFrameType(Node* marker_or_function,
-                             StackFrame::Type frame_type);
-
   // for..in helpers
   void CheckPrototypeEnumCache(Node* receiver, Node* receiver_map,
                                Label* if_fast, Label* if_slow);
@@ -3408,34 +3382,6 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
 
   void SetPropertyLength(TNode<Context> context, TNode<Object> array,
                          TNode<Number> length);
-
-  // Checks that {object_map}'s prototype map is the {initial_prototype_map} and
-  // makes sure that the field with name at index {descriptor} is still
-  // constant. If it is not, go to label {if_modified}.
-  //
-  // To make the checks robust, the method also asserts that the descriptor has
-  // the right key, the caller must pass the root index of the key
-  // in {field_name_root_index}.
-  //
-  // This is useful for checking that given function has not been patched
-  // on the prototype.
-  void GotoIfInitialPrototypePropertyModified(TNode<Map> object_map,
-                                              TNode<Map> initial_prototype_map,
-                                              int descfriptor,
-                                              RootIndex field_name_root_index,
-                                              Label* if_modified);
-  struct DescriptorIndexAndName {
-    DescriptorIndexAndName() {}
-    DescriptorIndexAndName(int descriptor_index, RootIndex name_root_index)
-        : descriptor_index(descriptor_index),
-          name_root_index(name_root_index) {}
-
-    int descriptor_index;
-    RootIndex name_root_index;
-  };
-  void GotoIfInitialPrototypePropertiesModified(
-      TNode<Map> object_map, TNode<Map> initial_prototype_map,
-      Vector<DescriptorIndexAndName> properties, Label* if_modified);
 
   // Implements DescriptorArray::Search().
   void DescriptorLookup(SloppyTNode<Name> unique_name,
@@ -3799,6 +3745,43 @@ class ToDirectStringAssembler : public CodeStubAssembler {
   Variable var_is_external_;
 
   const Flags flags_;
+};
+
+// Performs checks on a given prototype (e.g. map identity, property
+// verification), intended for use in fast path checks.
+class PrototypeCheckAssembler : public CodeStubAssembler {
+ public:
+  enum Flag {
+    kCheckPrototypePropertyConstness = 1 << 0,
+    kCheckPrototypePropertyIdentity = 1 << 1,
+    kCheckFull =
+        kCheckPrototypePropertyConstness | kCheckPrototypePropertyIdentity,
+  };
+  using Flags = base::Flags<Flag>;
+
+  // A tuple describing a relevant property. It contains the descriptor index of
+  // the property (within the descriptor array), the property's expected name
+  // (stored as a root), and the property's expected value (stored on the native
+  // context).
+  struct DescriptorIndexNameValue {
+    int descriptor_index;
+    RootIndex name_root_index;
+    int expected_value_context_index;
+  };
+
+  PrototypeCheckAssembler(compiler::CodeAssemblerState* state, Flags flags,
+                          TNode<NativeContext> native_context,
+                          TNode<Map> initial_prototype_map,
+                          Vector<DescriptorIndexNameValue> properties);
+
+  void CheckAndBranch(TNode<HeapObject> prototype, Label* if_unmodified,
+                      Label* if_modified);
+
+ private:
+  const Flags flags_;
+  const TNode<NativeContext> native_context_;
+  const TNode<Map> initial_prototype_map_;
+  const Vector<DescriptorIndexNameValue> properties_;
 };
 
 DEFINE_OPERATORS_FOR_FLAGS(CodeStubAssembler::AllocationFlags)

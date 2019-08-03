@@ -1291,8 +1291,8 @@ class EvacuateVisitorBase : public HeapObjectVisitor {
     if (AbortCompactionForTesting(object)) return false;
 #endif  // VERIFY_HEAP
     AllocationAlignment alignment = HeapObject::RequiredAlignment(object.map());
-    AllocationResult allocation =
-        local_allocator_->Allocate(target_space, size, alignment);
+    AllocationResult allocation = local_allocator_->Allocate(
+        target_space, size, AllocationOrigin::kGC, alignment);
     if (allocation.To(target_object)) {
       MigrateObject(*target_object, object, size, target_space);
       if (target_space == CODE_SPACE)
@@ -1398,8 +1398,8 @@ class EvacuateNewSpaceVisitor final : public EvacuateVisitorBase {
     AllocationAlignment alignment =
         HeapObject::RequiredAlignment(old_object.map());
     AllocationSpace space_allocated_in = NEW_SPACE;
-    AllocationResult allocation =
-        local_allocator_->Allocate(NEW_SPACE, size, alignment);
+    AllocationResult allocation = local_allocator_->Allocate(
+        NEW_SPACE, size, AllocationOrigin::kGC, alignment);
     if (allocation.IsRetry()) {
       allocation = AllocateInOldSpace(size, alignment);
       space_allocated_in = OLD_SPACE;
@@ -1412,8 +1412,8 @@ class EvacuateNewSpaceVisitor final : public EvacuateVisitorBase {
 
   inline AllocationResult AllocateInOldSpace(int size_in_bytes,
                                              AllocationAlignment alignment) {
-    AllocationResult allocation =
-        local_allocator_->Allocate(OLD_SPACE, size_in_bytes, alignment);
+    AllocationResult allocation = local_allocator_->Allocate(
+        OLD_SPACE, size_in_bytes, AllocationOrigin::kGC, alignment);
     if (allocation.IsRetry()) {
       heap_->FatalProcessOutOfMemory(
           "MarkCompactCollector: semi-space copy, fallback in old gen");
@@ -1941,6 +1941,8 @@ void MarkCompactCollector::MarkLiveObjects() {
   if (was_marked_incrementally_) {
     heap()->incremental_marking()->Deactivate();
   }
+
+  epoch_++;
 }
 
 void MarkCompactCollector::ClearNonLiveReferences() {
@@ -2748,6 +2750,7 @@ class Evacuator : public Malloced {
   inline void Finalize();
 
   virtual GCTracer::BackgroundScope::ScopeId GetBackgroundTracingScope() = 0;
+  virtual GCTracer::Scope::ScopeId GetTracingScope() = 0;
 
  protected:
   static const int kInitialLocalPretenuringFeedbackCapacity = 256;
@@ -2784,6 +2787,7 @@ class Evacuator : public Malloced {
 
 void Evacuator::EvacuatePage(MemoryChunk* chunk) {
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.gc"), "Evacuator::EvacuatePage");
+  DCHECK(chunk->SweepingDone());
   intptr_t saved_live_bytes = 0;
   double evacuation_time = 0.0;
   {
@@ -2833,6 +2837,10 @@ class FullEvacuator : public Evacuator {
 
   GCTracer::BackgroundScope::ScopeId GetBackgroundTracingScope() override {
     return GCTracer::BackgroundScope::MC_BACKGROUND_EVACUATE_COPY;
+  }
+
+  GCTracer::Scope::ScopeId GetTracingScope() override {
+    return GCTracer::Scope::MC_EVACUATE_COPY_PARALLEL;
   }
 
   inline void Finalize() {
@@ -2925,16 +2933,24 @@ class PageEvacuationTask : public ItemParallelJob::Task {
         evacuator_(evacuator),
         tracer_(isolate->heap()->tracer()) {}
 
-  void RunInParallel() override {
-    TRACE_BACKGROUND_GC(tracer_, evacuator_->GetBackgroundTracingScope());
+  void RunInParallel(Runner runner) override {
+    if (runner == Runner::kForeground) {
+      TRACE_GC(tracer_, evacuator_->GetTracingScope());
+      ProcessItems();
+    } else {
+      TRACE_BACKGROUND_GC(tracer_, evacuator_->GetBackgroundTracingScope());
+      ProcessItems();
+    }
+  }
+
+ private:
+  void ProcessItems() {
     EvacuationItem* item = nullptr;
     while ((item = GetItem<EvacuationItem>()) != nullptr) {
       evacuator_->EvacuatePage(item->chunk());
       item->MarkFinished();
     }
   }
-
- private:
   Evacuator* evacuator_;
   GCTracer* tracer_;
 };
@@ -3010,7 +3026,6 @@ void MarkCompactCollector::EvacuatePagesInParallel() {
         DCHECK_EQ(heap()->old_space(), page->owner());
         // The move added page->allocated_bytes to the old space, but we are
         // going to sweep the page and add page->live_byte_count.
-        page->MarkUnswept();
         heap()->old_space()->DecreaseAllocatedBytes(page->allocated_bytes(),
                                                     page);
       } else {
@@ -3235,24 +3250,35 @@ class UpdatingItem : public ItemParallelJob::Item {
 
 class PointersUpdatingTask : public ItemParallelJob::Task {
  public:
-  explicit PointersUpdatingTask(Isolate* isolate,
-                                GCTracer::BackgroundScope::ScopeId scope)
+  explicit PointersUpdatingTask(
+      Isolate* isolate, GCTracer::Scope::ScopeId scope,
+      GCTracer::BackgroundScope::ScopeId background_scope)
       : ItemParallelJob::Task(isolate),
         tracer_(isolate->heap()->tracer()),
-        scope_(scope) {}
+        scope_(scope),
+        background_scope_(background_scope) {}
 
-  void RunInParallel() override {
-    TRACE_BACKGROUND_GC(tracer_, scope_);
+  void RunInParallel(Runner runner) override {
+    if (runner == Runner::kForeground) {
+      TRACE_GC(tracer_, scope_);
+      UpdatePointers();
+    } else {
+      TRACE_BACKGROUND_GC(tracer_, background_scope_);
+      UpdatePointers();
+    }
+  }
+
+ private:
+  void UpdatePointers() {
     UpdatingItem* item = nullptr;
     while ((item = GetItem<UpdatingItem>()) != nullptr) {
       item->Process();
       item->MarkFinished();
     }
   }
-
- private:
   GCTracer* tracer_;
-  GCTracer::BackgroundScope::ScopeId scope_;
+  GCTracer::Scope::ScopeId scope_;
+  GCTracer::BackgroundScope::ScopeId background_scope_;
 };
 
 template <typename MarkingState>
@@ -3668,7 +3694,7 @@ void MarkCompactCollector::UpdatePointersAfterEvacuation() {
             remembered_set_tasks + num_ephemeron_table_updating_tasks);
     for (int i = 0; i < num_tasks; i++) {
       updating_job.AddTask(new PointersUpdatingTask(
-          isolate(),
+          isolate(), GCTracer::Scope::MC_EVACUATE_UPDATE_POINTERS_PARALLEL,
           GCTracer::BackgroundScope::MC_BACKGROUND_EVACUATE_UPDATE_POINTERS));
     }
     updating_job.AddItem(new EphemeronTableUpdatingItem(heap()));
@@ -3701,7 +3727,7 @@ void MarkCompactCollector::UpdatePointersAfterEvacuation() {
     if (num_tasks > 0) {
       for (int i = 0; i < num_tasks; i++) {
         updating_job.AddTask(new PointersUpdatingTask(
-            isolate(),
+            isolate(), GCTracer::Scope::MC_EVACUATE_UPDATE_POINTERS_PARALLEL,
             GCTracer::BackgroundScope::MC_BACKGROUND_EVACUATE_UPDATE_POINTERS));
       }
       updating_job.Run();
@@ -3763,7 +3789,7 @@ void MarkCompactCollector::PostProcessEvacuationCandidates() {
       aborted_pages_verified++;
     } else {
       DCHECK(p->IsEvacuationCandidate());
-      DCHECK(!p->SweepingDone());
+      DCHECK(p->SweepingDone());
       p->owner()->memory_chunk_list().Remove(p);
     }
   }
@@ -3779,7 +3805,7 @@ void MarkCompactCollector::ReleaseEvacuationCandidates() {
     if (!p->IsEvacuationCandidate()) continue;
     PagedSpace* space = static_cast<PagedSpace*>(p->owner());
     non_atomic_marking_state()->SetLiveBytes(p, 0);
-    CHECK(!p->SweepingDone());
+    CHECK(p->SweepingDone());
     space->ReleasePage(p);
   }
   old_space_evacuation_pages_.clear();
@@ -3795,7 +3821,7 @@ void MarkCompactCollector::StartSweepSpace(PagedSpace* space) {
   // Loop needs to support deletion if live bytes == 0 for a page.
   for (auto it = space->begin(); it != space->end();) {
     Page* p = *(it++);
-    DCHECK(!p->SweepingDone());
+    DCHECK(p->SweepingDone());
 
     if (p->IsEvacuationCandidate()) {
       // Will be processed in Evacuate.
@@ -3830,11 +3856,6 @@ void MarkCompactCollector::StartSweepSpace(PagedSpace* space) {
 
 void MarkCompactCollector::StartSweepSpaces() {
   TRACE_GC(heap()->tracer(), GCTracer::Scope::MC_SWEEP);
-
-  // We increment the epoch when sweeping starts. That will make all sweepable
-  // pages of the old generation not swept.
-  epoch_++;
-
 #ifdef DEBUG
   state_ = SWEEP_SPACES;
 #endif
@@ -4216,8 +4237,9 @@ void MinorMarkCompactCollector::UpdatePointersAfterEvacuation() {
   const int num_tasks = Max(to_space_tasks, remembered_set_tasks);
   for (int i = 0; i < num_tasks; i++) {
     updating_job.AddTask(new PointersUpdatingTask(
-        isolate(), GCTracer::BackgroundScope::
-                       MINOR_MC_BACKGROUND_EVACUATE_UPDATE_POINTERS));
+        isolate(), GCTracer::Scope::MINOR_MC_EVACUATE_UPDATE_POINTERS_PARALLEL,
+        GCTracer::BackgroundScope::
+            MINOR_MC_BACKGROUND_EVACUATE_UPDATE_POINTERS));
   }
 
   {
@@ -4520,9 +4542,30 @@ class YoungGenerationMarkingTask : public ItemParallelJob::Task {
                               Page::kPageSize);
   }
 
-  void RunInParallel() override {
-    TRACE_BACKGROUND_GC(collector_->heap()->tracer(),
-                        GCTracer::BackgroundScope::MINOR_MC_BACKGROUND_MARKING);
+  void RunInParallel(Runner runner) override {
+    if (runner == Runner::kForeground) {
+      TRACE_GC(collector_->heap()->tracer(),
+               GCTracer::Scope::MINOR_MC_MARK_PARALLEL);
+      ProcessItems();
+    } else {
+      TRACE_BACKGROUND_GC(
+          collector_->heap()->tracer(),
+          GCTracer::BackgroundScope::MINOR_MC_BACKGROUND_MARKING);
+      ProcessItems();
+    }
+  }
+
+  void MarkObject(Object object) {
+    if (!Heap::InYoungGeneration(object)) return;
+    HeapObject heap_object = HeapObject::cast(object);
+    if (marking_state_->WhiteToGrey(heap_object)) {
+      const int size = visitor_.Visit(heap_object);
+      IncrementLiveBytes(heap_object, size);
+    }
+  }
+
+ private:
+  void ProcessItems() {
     double marking_time = 0.0;
     {
       TimedScope scope(&marking_time);
@@ -4541,17 +4584,6 @@ class YoungGenerationMarkingTask : public ItemParallelJob::Task {
                    static_cast<void*>(this), marking_time);
     }
   }
-
-  void MarkObject(Object object) {
-    if (!Heap::InYoungGeneration(object)) return;
-    HeapObject heap_object = HeapObject::cast(object);
-    if (marking_state_->WhiteToGrey(heap_object)) {
-      const int size = visitor_.Visit(heap_object);
-      IncrementLiveBytes(heap_object, size);
-    }
-  }
-
- private:
   void EmptyLocalMarkingWorklist() {
     HeapObject object;
     while (marking_worklist_.Pop(&object)) {
@@ -4783,6 +4815,10 @@ class YoungGenerationEvacuator : public Evacuator {
     return GCTracer::BackgroundScope::MINOR_MC_BACKGROUND_EVACUATE_COPY;
   }
 
+  GCTracer::Scope::ScopeId GetTracingScope() override {
+    return GCTracer::Scope::MINOR_MC_EVACUATE_COPY_PARALLEL;
+  }
+
  protected:
   void RawEvacuatePage(MemoryChunk* chunk, intptr_t* live_bytes) override;
 
@@ -4866,11 +4902,7 @@ void MinorMarkCompactCollector::EvacuatePagesInParallel() {
     live_bytes += live_bytes_on_page;
     if (ShouldMovePage(page, live_bytes_on_page)) {
       if (page->IsFlagSet(MemoryChunk::NEW_SPACE_BELOW_AGE_MARK)) {
-        // A page is promoted to the old generation. We have to give it the
-        // current MC epoch counter. It will take part in the sweeping phase
-        // of the next MC.
         EvacuateNewSpacePageVisitor<NEW_TO_OLD>::Move(page);
-        page->InitializeSweepingState();
       } else {
         EvacuateNewSpacePageVisitor<NEW_TO_NEW>::Move(page);
       }

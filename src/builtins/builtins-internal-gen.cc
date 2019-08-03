@@ -534,11 +534,12 @@ TF_BUILTIN(DeleteProperty, DeletePropertyBaseAssembler) {
   VARIABLE(var_index, MachineType::PointerRepresentation());
   VARIABLE(var_unique, MachineRepresentation::kTagged, key);
   Label if_index(this), if_unique_name(this), if_notunique(this),
-      if_notfound(this), slow(this);
+      if_notfound(this), slow(this), if_proxy(this);
 
   GotoIf(TaggedIsSmi(receiver), &slow);
   TNode<Map> receiver_map = LoadMap(CAST(receiver));
   TNode<Int32T> instance_type = LoadMapInstanceType(receiver_map);
+  GotoIf(InstanceTypeEqual(instance_type, JS_PROXY_TYPE), &if_proxy);
   GotoIf(IsCustomElementsReceiverInstanceType(instance_type), &slow);
   TryToName(key, &if_index, &var_index, &if_unique_name, &var_unique, &slow,
             &if_notunique);
@@ -591,6 +592,14 @@ TF_BUILTIN(DeleteProperty, DeletePropertyBaseAssembler) {
 
   BIND(&if_notfound);
   Return(TrueConstant());
+
+  BIND(&if_proxy);
+  {
+    TNode<Name> name = CAST(CallBuiltin(Builtins::kToName, context, key));
+    GotoIf(IsPrivateSymbol(name), &slow);
+    TailCallBuiltin(Builtins::kProxyDeleteProperty, context, receiver, name,
+                    language_mode);
+  }
 
   BIND(&slow);
   {
@@ -810,17 +819,49 @@ TF_BUILTIN(AdaptorWithBuiltinExitFrame, CodeStubAssembler) {
 TF_BUILTIN(AllocateInYoungGeneration, CodeStubAssembler) {
   TNode<IntPtrT> requested_size =
       UncheckedCast<IntPtrT>(Parameter(Descriptor::kRequestedSize));
+  CSA_CHECK(this, IsValidPositiveSmi(requested_size));
 
+  TNode<Smi> allocation_flags =
+      SmiConstant(Smi::FromInt(AllocateDoubleAlignFlag::encode(false) |
+                               AllowLargeObjectAllocationFlag::encode(true)));
   TailCallRuntime(Runtime::kAllocateInYoungGeneration, NoContextConstant(),
-                  SmiFromIntPtr(requested_size));
+                  SmiFromIntPtr(requested_size), allocation_flags);
+}
+
+TF_BUILTIN(AllocateRegularInYoungGeneration, CodeStubAssembler) {
+  TNode<IntPtrT> requested_size =
+      UncheckedCast<IntPtrT>(Parameter(Descriptor::kRequestedSize));
+  CSA_CHECK(this, IsValidPositiveSmi(requested_size));
+
+  TNode<Smi> allocation_flags =
+      SmiConstant(Smi::FromInt(AllocateDoubleAlignFlag::encode(false) |
+                               AllowLargeObjectAllocationFlag::encode(false)));
+  TailCallRuntime(Runtime::kAllocateInYoungGeneration, NoContextConstant(),
+                  SmiFromIntPtr(requested_size), allocation_flags);
 }
 
 TF_BUILTIN(AllocateInOldGeneration, CodeStubAssembler) {
   TNode<IntPtrT> requested_size =
       UncheckedCast<IntPtrT>(Parameter(Descriptor::kRequestedSize));
+  CSA_CHECK(this, IsValidPositiveSmi(requested_size));
 
+  TNode<Smi> runtime_flags =
+      SmiConstant(Smi::FromInt(AllocateDoubleAlignFlag::encode(false) |
+                               AllowLargeObjectAllocationFlag::encode(true)));
   TailCallRuntime(Runtime::kAllocateInOldGeneration, NoContextConstant(),
-                  SmiFromIntPtr(requested_size), SmiConstant(0));
+                  SmiFromIntPtr(requested_size), runtime_flags);
+}
+
+TF_BUILTIN(AllocateRegularInOldGeneration, CodeStubAssembler) {
+  TNode<IntPtrT> requested_size =
+      UncheckedCast<IntPtrT>(Parameter(Descriptor::kRequestedSize));
+  CSA_CHECK(this, IsValidPositiveSmi(requested_size));
+
+  TNode<Smi> runtime_flags =
+      SmiConstant(Smi::FromInt(AllocateDoubleAlignFlag::encode(false) |
+                               AllowLargeObjectAllocationFlag::encode(false)));
+  TailCallRuntime(Runtime::kAllocateInOldGeneration, NoContextConstant(),
+                  SmiFromIntPtr(requested_size), runtime_flags);
 }
 
 TF_BUILTIN(Abort, CodeStubAssembler) {
@@ -828,9 +869,9 @@ TF_BUILTIN(Abort, CodeStubAssembler) {
   TailCallRuntime(Runtime::kAbort, NoContextConstant(), message_id);
 }
 
-TF_BUILTIN(AbortJS, CodeStubAssembler) {
+TF_BUILTIN(AbortCSAAssert, CodeStubAssembler) {
   TNode<String> message = CAST(Parameter(Descriptor::kMessageOrMessageId));
-  TailCallRuntime(Runtime::kAbortJS, NoContextConstant(), message);
+  TailCallRuntime(Runtime::kAbortCSAAssert, NoContextConstant(), message);
 }
 
 void Builtins::Generate_CEntry_Return1_DontSaveFPRegs_ArgvOnStack_NoBuiltinExit(
@@ -1014,6 +1055,9 @@ TF_BUILTIN(GetPropertyWithReceiver, CodeStubAssembler) {
   {
     // Convert the {key} to a Name first.
     Node* name = CallBuiltin(Builtins::kToName, context, key);
+
+    // Proxy cannot handle private symbol so bailout.
+    GotoIf(IsPrivateSymbol(name), &if_slow);
 
     // The {object} is a JSProxy instance, look up the {name} on it, passing
     // {object} both as receiver and holder. If {name} is absent we can safely

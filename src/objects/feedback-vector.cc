@@ -887,21 +887,10 @@ float FeedbackNexus::ComputeCallFrequency() {
 
   double const invocation_count = vector().invocation_count();
   double const call_count = GetCallCount();
-  if (invocation_count == 0) {
-    // Prevent division by 0.
+  if (invocation_count == 0.0) {  // Prevent division by 0.
     return 0.0f;
   }
   return static_cast<float>(call_count / invocation_count);
-}
-
-bool FeedbackNexus::SetBinaryOpFeedbackToAny() {
-  DCHECK_EQ(kind(), FeedbackSlotKind::kBinaryOp);
-  int feedback = GetFeedback().ToSmi().value();
-  if (feedback == BinaryOperationFeedback::kAny) {
-    return false;
-  }
-  SetFeedback(Smi::FromInt(BinaryOperationFeedback::kAny));
-  return true;
 }
 
 void FeedbackNexus::ConfigureMonomorphic(Handle<Name> name,

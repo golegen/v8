@@ -36,10 +36,10 @@
 #include "src/codegen/macro-assembler.h"
 #include "src/init/v8.h"
 #include "src/objects/objects-inl.h"
+#include "src/regexp/regexp-bytecode-generator.h"
 #include "src/regexp/regexp-compiler.h"
 #include "src/regexp/regexp-interpreter.h"
 #include "src/regexp/regexp-macro-assembler-arch.h"
-#include "src/regexp/regexp-macro-assembler-irregexp.h"
 #include "src/regexp/regexp-parser.h"
 #include "src/regexp/regexp.h"
 #include "src/strings/char-predicates-inl.h"
@@ -1254,7 +1254,7 @@ TEST(MacroAssemblerNativeLotsOfRegisters) {
 
 TEST(MacroAssembler) {
   Zone zone(CcTest::i_isolate()->allocator(), ZONE_NAME);
-  RegExpMacroAssemblerIrregexp m(CcTest::i_isolate(), &zone);
+  RegExpBytecodeGenerator m(CcTest::i_isolate(), &zone);
   // ^f(o)o.
   Label start, fail, backtrack;
 
@@ -1298,7 +1298,8 @@ TEST(MacroAssembler) {
   Handle<String> f1_16 = factory->NewStringFromTwoByte(
       Vector<const uc16>(str1, 6)).ToHandleChecked();
 
-  CHECK(IrregexpInterpreter::Match(isolate, array, f1_16, captures, 0));
+  CHECK(IrregexpInterpreter::MatchForCallFromRuntime(isolate, array, f1_16,
+                                                     captures, 5, 0));
   CHECK_EQ(0, captures[0]);
   CHECK_EQ(3, captures[1]);
   CHECK_EQ(1, captures[2]);
@@ -1309,7 +1310,8 @@ TEST(MacroAssembler) {
   Handle<String> f2_16 = factory->NewStringFromTwoByte(
       Vector<const uc16>(str2, 6)).ToHandleChecked();
 
-  CHECK(!IrregexpInterpreter::Match(isolate, array, f2_16, captures, 0));
+  CHECK(!IrregexpInterpreter::MatchForCallFromRuntime(isolate, array, f2_16,
+                                                      captures, 5, 0));
   CHECK_EQ(42, captures[0]);
 }
 
@@ -1692,8 +1694,7 @@ void MockUseCounterCallback(v8::Isolate* isolate,
 }
 }
 
-
-// Test that ES2015 RegExp compatibility fixes are in place, that they
+// Test that ES2015+ RegExp compatibility fixes are in place, that they
 // are not overly broad, and the appropriate UseCounters are incremented
 TEST(UseCountRegExp) {
   v8::Isolate* isolate = CcTest::isolate();
@@ -1715,7 +1716,7 @@ TEST(UseCountRegExp) {
   CHECK_EQ(0, use_counts[v8::Isolate::kRegExpPrototypeToString]);
   CHECK(resultReSticky->IsFalse());
 
-  // When the getter is caleld on another object, throw an exception
+  // When the getter is called on another object, throw an exception
   // and don't increment the UseCounter
   v8::Local<v8::Value> resultStickyError = CompileRun(
       "var exception;"
@@ -1757,6 +1758,19 @@ TEST(UseCountRegExp) {
   CHECK_EQ(2, use_counts[v8::Isolate::kRegExpPrototypeStickyGetter]);
   CHECK_EQ(1, use_counts[v8::Isolate::kRegExpPrototypeToString]);
   CHECK(resultToStringError->IsObject());
+
+  // Increment a UseCounter when .matchAll() is used with a non-global
+  // regular expression.
+  CHECK_EQ(0, use_counts[v8::Isolate::kRegExpMatchAllWithNonGlobalRegExp]);
+  v8::Local<v8::Value> resultReMatchAllNonGlobal =
+      CompileRun("'a'.matchAll(/./)");
+  CHECK_EQ(1, use_counts[v8::Isolate::kRegExpMatchAllWithNonGlobalRegExp]);
+  CHECK(resultReMatchAllNonGlobal->IsObject());
+  // Don't increment the counter for global regular expressions.
+  v8::Local<v8::Value> resultReMatchAllGlobal =
+      CompileRun("'a'.matchAll(/./g)");
+  CHECK_EQ(1, use_counts[v8::Isolate::kRegExpMatchAllWithNonGlobalRegExp]);
+  CHECK(resultReMatchAllGlobal->IsObject());
 }
 
 class UncachedExternalString

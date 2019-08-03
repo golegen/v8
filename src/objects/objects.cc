@@ -3046,27 +3046,34 @@ Maybe<bool> JSProxy::DeletePropertyOrElement(Handle<JSProxy> proxy,
   }
 
   // Enforce the invariant.
+  return JSProxy::CheckDeleteTrap(isolate, name, target);
+}
+
+Maybe<bool> JSProxy::CheckDeleteTrap(Isolate* isolate, Handle<Name> name,
+                                     Handle<JSReceiver> target) {
+  // 10. Let targetDesc be ? target.[[GetOwnProperty]](P).
   PropertyDescriptor target_desc;
-  Maybe<bool> owned =
+  Maybe<bool> target_found =
       JSReceiver::GetOwnPropertyDescriptor(isolate, target, name, &target_desc);
-  MAYBE_RETURN(owned, Nothing<bool>());
-  if (owned.FromJust()) {
+  MAYBE_RETURN(target_found, Nothing<bool>());
+  // 11. If targetDesc is undefined, return true.
+  if (target_found.FromJust()) {
+    // 12. If targetDesc.[[Configurable]] is false, throw a TypeError exception.
     if (!target_desc.configurable()) {
-      isolate->Throw(*factory->NewTypeError(
+      isolate->Throw(*isolate->factory()->NewTypeError(
           MessageTemplate::kProxyDeletePropertyNonConfigurable, name));
       return Nothing<bool>();
     }
     // 13. Let extensibleTarget be ? IsExtensible(target).
+    Maybe<bool> extensible_target = JSReceiver::IsExtensible(target);
+    MAYBE_RETURN(extensible_target, Nothing<bool>());
     // 14. If extensibleTarget is false, throw a TypeError exception.
-    Maybe<bool> extensible = JSReceiver::IsExtensible(target);
-    MAYBE_RETURN(extensible, Nothing<bool>());
-    if (!extensible.FromJust()) {
-      isolate->Throw(*factory->NewTypeError(
+    if (!extensible_target.FromJust()) {
+      isolate->Throw(*isolate->factory()->NewTypeError(
           MessageTemplate::kProxyDeletePropertyNonExtensible, name));
       return Nothing<bool>();
     }
   }
-
   return Just(true);
 }
 
@@ -3272,7 +3279,11 @@ Maybe<bool> JSArray::ArraySetLength(Isolate* isolate, Handle<JSArray> a,
                                      new_len_desc, should_throw);
   }
   // 13. If oldLenDesc.[[Writable]] is false, return false.
-  if (!old_len_desc.writable()) {
+  if (!old_len_desc.writable() ||
+      // Also handle the {configurable: true} case since we later use
+      // JSArray::SetLength instead of OrdinaryDefineOwnProperty to change
+      // the length, and it doesn't have access to the descriptor anymore.
+      new_len_desc->configurable()) {
     RETURN_FAILURE(isolate, GetShouldThrow(isolate, should_throw),
                    NewTypeError(MessageTemplate::kRedefineDisallowed,
                                 isolate->factory()->length_string()));
@@ -4248,7 +4259,7 @@ void DescriptorArray::Sort() {
 }
 
 int16_t DescriptorArray::UpdateNumberOfMarkedDescriptors(
-    uintptr_t mark_compact_epoch, int16_t new_marked) {
+    unsigned mark_compact_epoch, int16_t new_marked) {
   STATIC_ASSERT(kMaxNumberOfDescriptors <=
                 NumberOfMarkedDescriptors::kMaxNumberOfMarkedDescriptors);
   int16_t old_raw_marked = raw_number_of_marked_descriptors();
@@ -6140,15 +6151,20 @@ template <typename Char>
 int CountRequiredEscapes(Handle<String> source) {
   DisallowHeapAllocation no_gc;
   int escapes = 0;
+  bool in_char_class = false;
   Vector<const Char> src = source->GetCharVector<Char>(no_gc);
   for (int i = 0; i < src.length(); i++) {
     const Char c = src[i];
     if (c == '\\') {
       // Escape. Skip next character;
       i++;
-    } else if (c == '/') {
+    } else if (c == '/' && !in_char_class) {
       // Not escaped forward-slash needs escape.
       escapes++;
+    } else if (c == '[') {
+      in_char_class = true;
+    } else if (c == ']') {
+      in_char_class = false;
     } else if (c == '\n') {
       escapes++;
     } else if (c == '\r') {
@@ -6161,6 +6177,7 @@ int CountRequiredEscapes(Handle<String> source) {
       DCHECK(!unibrow::IsLineTerminator(static_cast<unibrow::uchar>(c)));
     }
   }
+  DCHECK(!in_char_class);
   return escapes;
 }
 
@@ -6178,16 +6195,19 @@ Handle<StringType> WriteEscapedRegExpSource(Handle<String> source,
   Vector<Char> dst(result->GetChars(no_gc), result->length());
   int s = 0;
   int d = 0;
-  // TODO(v8:1982): Fully implement
-  // https://tc39.github.io/ecma262/#sec-escaperegexppattern
+  bool in_char_class = false;
   while (s < src.length()) {
     if (src[s] == '\\') {
       // Escape. Copy this and next character.
       dst[d++] = src[s++];
       if (s == src.length()) break;
-    } else if (src[s] == '/') {
+    } else if (src[s] == '/' && !in_char_class) {
       // Not escaped forward-slash needs escape.
       dst[d++] = '\\';
+    } else if (src[s] == '[') {
+      in_char_class = true;
+    } else if (src[s] == ']') {
+      in_char_class = false;
     } else if (src[s] == '\n') {
       WriteStringToCharVector(dst, &d, "\\n");
       s++;
@@ -6208,6 +6228,7 @@ Handle<StringType> WriteEscapedRegExpSource(Handle<String> source,
     dst[d++] = src[s++];
   }
   DCHECK_EQ(result->length(), d);
+  DCHECK(!in_char_class);
   return result;
 }
 
@@ -6264,12 +6285,12 @@ MaybeHandle<JSRegExp> JSRegExp::Initialize(Handle<JSRegExp> regexp,
 
   source = String::Flatten(isolate, source);
 
+  RETURN_ON_EXCEPTION(isolate, RegExp::Compile(isolate, regexp, source, flags),
+                      JSRegExp);
+
   Handle<String> escaped_source;
   ASSIGN_RETURN_ON_EXCEPTION(isolate, escaped_source,
                              EscapeRegExpSource(isolate, source), JSRegExp);
-
-  RETURN_ON_EXCEPTION(isolate, RegExp::Compile(isolate, regexp, source, flags),
-                      JSRegExp);
 
   regexp->set_source(*escaped_source);
   regexp->set_flags(Smi::FromInt(flags));
@@ -7841,9 +7862,13 @@ Handle<PropertyCell> PropertyCell::PrepareForValue(
 
 // static
 void PropertyCell::SetValueWithInvalidation(Isolate* isolate,
+                                            const char* cell_name,
                                             Handle<PropertyCell> cell,
                                             Handle<Object> new_value) {
   if (cell->value() != *new_value) {
+    if (FLAG_trace_protector_invalidation) {
+      isolate->TraceProtectorInvalidation(cell_name);
+    }
     cell->set_value(*new_value);
     cell->dependent_code().DeoptimizeDependentCodeGroup(
         isolate, DependentCode::kPropertyCellChangedGroup);
@@ -8042,7 +8067,7 @@ HashTable<NameDictionary, NameDictionaryShape>::Shrink(Isolate* isolate,
                                                        Handle<NameDictionary>,
                                                        int additionalCapacity);
 
-void JSFinalizationGroup::Cleanup(
+Maybe<bool> JSFinalizationGroup::Cleanup(
     Isolate* isolate, Handle<JSFinalizationGroup> finalization_group,
     Handle<Object> cleanup) {
   DCHECK(cleanup->IsCallable());
@@ -8063,23 +8088,17 @@ void JSFinalizationGroup::Cleanup(
               Handle<AllocationSite>::null()));
       iterator->set_finalization_group(*finalization_group);
     }
-
-    v8::TryCatch try_catch(reinterpret_cast<v8::Isolate*>(isolate));
-    v8::Local<v8::Value> result;
-    MaybeHandle<Object> exception;
     Handle<Object> args[] = {iterator};
-    bool has_pending_exception = !ToLocal<Value>(
-        Execution::TryCall(
+    if (Execution::Call(
             isolate, cleanup,
-            handle(ReadOnlyRoots(isolate).undefined_value(), isolate), 1, args,
-            Execution::MessageHandling::kReport, &exception),
-        &result);
-    // TODO(marja): (spec): What if there's an exception?
-    USE(has_pending_exception);
-
+            handle(ReadOnlyRoots(isolate).undefined_value(), isolate), 1, args)
+            .is_null()) {
+      return Nothing<bool>();
+    }
     // TODO(marja): (spec): Should the iterator be invalidated after the
     // function returns?
   }
+  return Just(true);
 }
 
 MaybeHandle<FixedArray> JSReceiver::GetPrivateEntries(

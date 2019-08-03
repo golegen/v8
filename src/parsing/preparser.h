@@ -846,7 +846,7 @@ class PreParserFuncNameInferrer {
 
 class PreParserSourceRange {
  public:
-  PreParserSourceRange() {}
+  PreParserSourceRange() = default;
   PreParserSourceRange(int start, int end) {}
   static PreParserSourceRange Empty() { return PreParserSourceRange(); }
   static PreParserSourceRange OpenEnded(int32_t start) { return Empty(); }
@@ -1093,23 +1093,26 @@ class PreParser : public ParserBase<PreParser> {
   }
 
   void DeclareAndBindVariable(const VariableProxy* proxy, VariableKind kind,
-                              VariableMode mode, InitializationFlag init,
-                              Scope* scope, bool* was_added, int position) {
-    DeclareVariableName(proxy->raw_name(), mode, scope, was_added, position,
-                        kind);
+                              VariableMode mode, Scope* scope, bool* was_added,
+                              int initializer_position) {
+    Variable* var = DeclareVariableName(proxy->raw_name(), mode, scope,
+                                        was_added, proxy->position(), kind);
+    var->set_initializer_position(initializer_position);
     // Don't bother actually binding the proxy.
   }
 
-  Variable* DeclarePrivateVariableName(
-      const AstRawString* name, ClassScope* scope,
-      RequiresBrandCheckFlag requires_brand_check, bool* was_added) {
-    return scope->DeclarePrivateName(name, requires_brand_check, was_added);
+  Variable* DeclarePrivateVariableName(const AstRawString* name,
+                                       ClassScope* scope, VariableMode mode,
+                                       bool* was_added) {
+    DCHECK(IsConstVariableMode(mode));
+    return scope->DeclarePrivateName(name, mode, was_added);
   }
 
   Variable* DeclareVariableName(const AstRawString* name, VariableMode mode,
                                 Scope* scope, bool* was_added,
                                 int position = kNoSourcePosition,
                                 VariableKind kind = NORMAL_VARIABLE) {
+    DCHECK(!IsPrivateMethodOrAccessorVariableMode(mode));
     Variable* var = scope->DeclareVariableName(name, mode, was_added, kind);
     if (var == nullptr) {
       ReportUnidentifiableError();
@@ -1249,16 +1252,10 @@ class PreParser : public ParserBase<PreParser> {
       ClassScope* scope, const PreParserIdentifier& property_name,
       const PreParserExpression& property, ClassLiteralProperty::Kind kind,
       bool is_static, ClassInfo* class_info) {
-    // TODO(joyee): We do not support private accessors yet (which allow
-    // declaring the same private name twice). Make them noops.
-    if (kind != ClassLiteralProperty::Kind::FIELD &&
-        kind != ClassLiteralProperty::Kind::METHOD) {
-      return;
-    }
     bool was_added;
 
     DeclarePrivateVariableName(property_name.string_, scope,
-                               RequiresBrandCheck(kind), &was_added);
+                               GetVariableMode(kind), &was_added);
     if (!was_added) {
       Scanner::Location loc(property.position(), property.position() + 1);
       ReportMessageAt(loc, MessageTemplate::kVarRedeclaration,
@@ -1483,11 +1480,9 @@ class PreParser : public ParserBase<PreParser> {
 
   // Reporting errors.
   void ReportMessageAt(Scanner::Location source_location,
-                       MessageTemplate message, const char* arg = nullptr,
-                       ParseErrorType error_type = kSyntaxError) {
-    pending_error_handler()->ReportMessageAt(source_location.beg_pos,
-                                             source_location.end_pos, message,
-                                             arg, error_type);
+                       MessageTemplate message, const char* arg = nullptr) {
+    pending_error_handler()->ReportMessageAt(
+        source_location.beg_pos, source_location.end_pos, message, arg);
     scanner()->set_parser_error();
   }
 
@@ -1498,17 +1493,14 @@ class PreParser : public ParserBase<PreParser> {
 
   V8_INLINE void ReportMessageAt(Scanner::Location source_location,
                                  MessageTemplate message,
-                                 const PreParserIdentifier& arg,
-                                 ParseErrorType error_type = kSyntaxError) {
+                                 const PreParserIdentifier& arg) {
     UNREACHABLE();
   }
 
   void ReportMessageAt(Scanner::Location source_location,
-                       MessageTemplate message, const AstRawString* arg,
-                       ParseErrorType error_type = kSyntaxError) {
-    pending_error_handler()->ReportMessageAt(source_location.beg_pos,
-                                             source_location.end_pos, message,
-                                             arg, error_type);
+                       MessageTemplate message, const AstRawString* arg) {
+    pending_error_handler()->ReportMessageAt(
+        source_location.beg_pos, source_location.end_pos, message, arg);
     scanner()->set_parser_error();
   }
 
@@ -1644,11 +1636,11 @@ class PreParser : public ParserBase<PreParser> {
     return PreParserStatement::Jump();
   }
 
-  V8_INLINE void AddFormalParameter(PreParserFormalParameters* parameters,
-                                    PreParserExpression& pattern,
-                                    const PreParserExpression& initializer,
-                                    int initializer_end_position,
-                                    bool is_rest) {
+  V8_INLINE void AddFormalParameter(
+      PreParserFormalParameters* parameters,
+      PreParserExpression& pattern,  // NOLINT(runtime/references)
+      const PreParserExpression& initializer, int initializer_end_position,
+      bool is_rest) {
     DeclarationScope* scope = parameters->scope;
     scope->RecordParameter(is_rest);
     parameters->UpdateArityAndFunctionLength(!initializer.IsNull(), is_rest);

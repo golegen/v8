@@ -131,21 +131,22 @@ std::string BuildActual(const BytecodeExpectationsPrinter& printer,
 }
 
 // inplace left trim
-static inline void ltrim(std::string& str) {
+static inline void ltrim(std::string& str) {  // NOLINT(runtime/references)
   str.erase(str.begin(),
             std::find_if(str.begin(), str.end(),
                          [](unsigned char ch) { return !std::isspace(ch); }));
 }
 
 // inplace right trim
-static inline void rtrim(std::string& str) {
+static inline void rtrim(std::string& str) {  // NOLINT(runtime/references)
   str.erase(std::find_if(str.rbegin(), str.rend(),
                          [](unsigned char ch) { return !std::isspace(ch); })
                 .base(),
             str.end());
 }
 
-static inline std::string trim(std::string& str) {
+static inline std::string trim(
+    std::string& str) {  // NOLINT(runtime/references)
   ltrim(str);
   rtrim(str);
   return str;
@@ -2764,29 +2765,31 @@ TEST(PrivateMethods) {
   BytecodeExpectationsPrinter printer(CcTest::isolate());
 
   const char* snippets[] = {
-      R"({
-  class A {
-    #a() { return 1; }
-    callA() { return this.#a(); }
-  }
+      "{\n"
+      "  class A {\n"
+      "    #a() { return 1; }\n"
+      "    callA() { return this.#a(); }\n"
+      "  }\n"
+      "\n"
+      "  const a = new A;\n"
+      "  a.callA();\n"
+      "}\n",
 
-  const a = new A;
-  a.callA();
-})",
-      R"({
-  class D {
-    #d() { return 1; }
-    callD() { return this.#d(); }
-  }
+      "{\n"
+      "  class D {\n"
+      "    #d() { return 1; }\n"
+      "    callD() { return this.#d(); }\n"
+      "  }\n"
+      "\n"
+      "  class E extends D {\n"
+      "    #e() { return 2; }\n"
+      "    callE() { return this.callD() + this.#e(); }\n"
+      "  }\n"
+      "\n"
+      "  const e = new E;\n"
+      "  e.callE();\n"
+      "}\n"};
 
-  class E extends D {
-    #e() { return 2; }
-    callE() { return this.callD() + this.#e(); }
-  }
-
-  const e = new E;
-  e.callE();
-})"};
   CHECK(CompareTexts(BuildActual(printer, snippets),
                      LoadGolden("PrivateMethods.golden")));
   i::FLAG_harmony_private_methods = old_methods_flag;

@@ -217,6 +217,8 @@ RUNTIME_FUNCTION(Runtime_ObjectGetOwnPropertyNames) {
                                      Object::ToObject(isolate, object));
 
   // Collect the own keys for the {receiver}.
+  // TODO(v8:9401): We should extend the fast path of KeyAccumulator::GetKeys to
+  // also use fast path even when filter = SKIP_SYMBOLS.
   Handle<FixedArray> keys;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, keys,

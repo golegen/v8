@@ -8,6 +8,7 @@
 
 #include "src/base/bits.h"
 #include "src/codegen/code-factory.h"
+#include "src/compiler/js-heap-broker.h"
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/type-cache.h"
@@ -137,10 +138,11 @@ bool IsWord(MachineRepresentation rep) {
 
 }  // namespace
 
-RepresentationChanger::RepresentationChanger(JSGraph* jsgraph, Isolate* isolate)
+RepresentationChanger::RepresentationChanger(JSGraph* jsgraph,
+                                             JSHeapBroker* broker)
     : cache_(TypeCache::Get()),
       jsgraph_(jsgraph),
-      isolate_(isolate),
+      broker_(broker),
       testing_type_errors_(false),
       type_error_(false) {}
 
@@ -432,6 +434,8 @@ Node* RepresentationChanger::GetTaggedPointerRepresentationFor(
       op = machine()->ChangeInt64ToFloat64();
       node = jsgraph()->graph()->NewNode(op, node);
       op = simplified()->ChangeFloat64ToTaggedPointer();
+    } else if (output_type.Is(Type::BigInt())) {
+      op = simplified()->ChangeUint64ToBigInt();
     } else {
       return TypeError(node, output_rep, output_type,
                        MachineRepresentation::kTaggedPointer);
@@ -461,14 +465,28 @@ Node* RepresentationChanger::GetTaggedPointerRepresentationFor(
     // TODO(turbofan): Consider adding a Bailout operator that just deopts
     // for TaggedSigned output representation.
     op = simplified()->CheckedTaggedToTaggedPointer(use_info.feedback());
-  } else if ((IsAnyTagged(output_rep) || IsAnyCompressed(output_rep)) &&
-             use_info.type_check() == TypeCheckKind::kBigInt) {
-    if (IsAnyCompressed(output_rep)) {
-      node = InsertChangeCompressedToTagged(node);
+  } else if (IsAnyTagged(output_rep) &&
+             (use_info.type_check() == TypeCheckKind::kBigInt ||
+              output_type.Is(Type::BigInt()))) {
+    if (output_type.Is(Type::BigInt())) {
+      return node;
     }
     op = simplified()->CheckBigInt(use_info.feedback());
   } else if (output_rep == MachineRepresentation::kCompressedPointer) {
+    if (use_info.type_check() == TypeCheckKind::kBigInt &&
+        !output_type.Is(Type::BigInt())) {
+      node = InsertChangeCompressedPointerToTaggedPointer(node);
+      op = simplified()->CheckBigInt(use_info.feedback());
+    } else {
+      op = machine()->ChangeCompressedPointerToTaggedPointer();
+    }
+  } else if (output_rep == MachineRepresentation::kCompressed &&
+             output_type.Is(Type::BigInt())) {
     op = machine()->ChangeCompressedPointerToTaggedPointer();
+  } else if (output_rep == MachineRepresentation::kCompressed &&
+             use_info.type_check() == TypeCheckKind::kBigInt) {
+    node = InsertChangeCompressedToTagged(node);
+    op = simplified()->CheckBigInt(use_info.feedback());
   } else if (CanBeCompressedSigned(output_rep) &&
              use_info.type_check() == TypeCheckKind::kHeapObject) {
     if (!output_type.Maybe(Type::SignedSmall())) {
@@ -593,7 +611,11 @@ Node* RepresentationChanger::GetTaggedRepresentationFor(
       return TypeError(node, output_rep, output_type,
                        MachineRepresentation::kTagged);
     }
-  } else if (IsAnyCompressed(output_rep)) {
+  } else if (output_rep == MachineRepresentation::kCompressedSigned) {
+    op = machine()->ChangeCompressedSignedToTaggedSigned();
+  } else if (output_rep == MachineRepresentation::kCompressedPointer) {
+    op = machine()->ChangeCompressedPointerToTaggedPointer();
+  } else if (output_rep == MachineRepresentation::kCompressed) {
     op = machine()->ChangeCompressedToTagged();
   } else {
     return TypeError(node, output_rep, output_type,
@@ -630,9 +652,20 @@ Node* RepresentationChanger::GetCompressedSignedRepresentationFor(
                                             use_node, use_info);
     op = machine()->ChangeTaggedSignedToCompressedSigned();
   } else if (IsWord(output_rep)) {
-    node = GetTaggedSignedRepresentationFor(node, output_rep, output_type,
-                                            use_node, use_info);
-    op = machine()->ChangeTaggedSignedToCompressedSigned();
+    if (output_type.Is(Type::Signed31())) {
+      op = simplified()->ChangeInt31ToCompressedSigned();
+    } else if (output_type.Is(Type::Signed32())) {
+      if (use_info.type_check() == TypeCheckKind::kSignedSmall) {
+        op = simplified()->CheckedInt32ToCompressedSigned(use_info.feedback());
+      } else {
+        return TypeError(node, output_rep, output_type,
+                         MachineRepresentation::kCompressedSigned);
+      }
+    } else {
+      node = GetTaggedSignedRepresentationFor(node, output_rep, output_type,
+                                              use_node, use_info);
+      op = machine()->ChangeTaggedSignedToCompressedSigned();
+    }
   } else if (output_rep == MachineRepresentation::kWord64) {
     node = GetTaggedSignedRepresentationFor(node, output_rep, output_type,
                                             use_node, use_info);
@@ -1089,11 +1122,15 @@ Node* RepresentationChanger::GetWord32RepresentationFor(
                                       output_type, use_node, use_info);
   } else if (output_rep == MachineRepresentation::kCompressedSigned) {
     // TODO(v8:8977): Specialise here
-    op = machine()->ChangeCompressedSignedToTaggedSigned();
-    node = jsgraph()->graph()->NewNode(op, node);
-    return GetWord32RepresentationFor(node,
-                                      MachineRepresentation::kTaggedSigned,
-                                      output_type, use_node, use_info);
+    if (output_type.Is(Type::SignedSmall())) {
+      op = simplified()->ChangeCompressedSignedToInt32();
+    } else {
+      op = machine()->ChangeCompressedSignedToTaggedSigned();
+      node = jsgraph()->graph()->NewNode(op, node);
+      return GetWord32RepresentationFor(node,
+                                        MachineRepresentation::kTaggedSigned,
+                                        output_type, use_node, use_info);
+    }
   } else if (output_rep == MachineRepresentation::kCompressedPointer) {
     // TODO(v8:8977): Specialise here
     op = machine()->ChangeCompressedPointerToTaggedPointer();
@@ -1278,6 +1315,15 @@ Node* RepresentationChanger::GetWord64RepresentationFor(
       }
       break;
     }
+    case IrOpcode::kHeapConstant: {
+      HeapObjectMatcher m(node);
+      if (m.HasValue() && m.Ref(broker_).IsBigInt()) {
+        auto bigint = m.Ref(broker_).AsBigInt();
+        return jsgraph()->Int64Constant(
+            static_cast<int64_t>(bigint.AsUint64()));
+      }
+      break;
+    }
     default:
       break;
   }
@@ -1355,11 +1401,12 @@ Node* RepresentationChanger::GetWord64RepresentationFor(
       return TypeError(node, output_rep, output_type,
                        MachineRepresentation::kWord64);
     }
-  } else if ((IsAnyTagged(output_rep) || IsAnyCompressed(output_rep)) &&
-             output_type.Is(Type::BigInt())) {
-    if (IsAnyCompressed(output_rep)) {
-      node = InsertChangeCompressedToTagged(node);
-    }
+  } else if (IsAnyTagged(output_rep) &&
+             use_info.truncation().IsUsedAsWord64() &&
+             (use_info.type_check() == TypeCheckKind::kBigInt ||
+              output_type.Is(Type::BigInt()))) {
+    node = GetTaggedPointerRepresentationFor(node, output_rep, output_type,
+                                             use_node, use_info);
     op = simplified()->TruncateBigIntToUint64();
   } else if (CanBeTaggedPointer(output_rep)) {
     if (output_type.Is(cache_->kInt64)) {
@@ -1694,10 +1741,18 @@ Node* RepresentationChanger::InsertTruncateInt64ToInt32(Node* node) {
   return jsgraph()->graph()->NewNode(machine()->TruncateInt64ToInt32(), node);
 }
 
+Node* RepresentationChanger::InsertChangeCompressedPointerToTaggedPointer(
+    Node* node) {
+  return jsgraph()->graph()->NewNode(machine()->ChangeCompressedToTagged(),
+                                     node);
+}
+
 Node* RepresentationChanger::InsertChangeCompressedToTagged(Node* node) {
   return jsgraph()->graph()->NewNode(machine()->ChangeCompressedToTagged(),
                                      node);
 }
+
+Isolate* RepresentationChanger::isolate() const { return broker_->isolate(); }
 
 }  // namespace compiler
 }  // namespace internal

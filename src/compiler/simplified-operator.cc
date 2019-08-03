@@ -504,25 +504,6 @@ size_t hash_value(BigIntOperationHint hint) {
   return static_cast<uint8_t>(hint);
 }
 
-bool operator==(const BigIntOperationParameters& lhs,
-                const BigIntOperationParameters& rhs) {
-  return lhs.hint() == rhs.hint() && lhs.feedback() == rhs.feedback();
-}
-
-size_t hash_value(const BigIntOperationParameters& p) {
-  return base::hash_combine(p.hint(), p.feedback());
-}
-
-std::ostream& operator<<(std::ostream& os, const BigIntOperationParameters& p) {
-  return os << p.hint() << " " << p.feedback();
-}
-
-const BigIntOperationParameters& BigIntOperationParametersOf(
-    const Operator* op) {
-  DCHECK_EQ(IrOpcode::kSpeculativeBigIntAdd, op->opcode());
-  return OpParameter<BigIntOperationParameters>(op);
-}
-
 std::ostream& operator<<(std::ostream& os, NumberOperationHint hint) {
   switch (hint) {
     case NumberOperationHint::kSignedSmall:
@@ -727,6 +708,7 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(NumberToUint32, Operator::kNoProperties, 1, 0)                 \
   V(NumberToUint8Clamped, Operator::kNoProperties, 1, 0)           \
   V(NumberSilenceNaN, Operator::kNoProperties, 1, 0)               \
+  V(BigIntNegate, Operator::kNoProperties, 1, 0)                   \
   V(StringConcat, Operator::kNoProperties, 3, 0)                   \
   V(StringToNumber, Operator::kNoProperties, 1, 0)                 \
   V(StringFromSingleCharCode, Operator::kNoProperties, 1, 0)       \
@@ -739,6 +721,7 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(PlainPrimitiveToNumber, Operator::kNoProperties, 1, 0)         \
   V(PlainPrimitiveToWord32, Operator::kNoProperties, 1, 0)         \
   V(PlainPrimitiveToFloat64, Operator::kNoProperties, 1, 0)        \
+  V(ChangeCompressedSignedToInt32, Operator::kNoProperties, 1, 0)  \
   V(ChangeTaggedSignedToInt32, Operator::kNoProperties, 1, 0)      \
   V(ChangeTaggedSignedToInt64, Operator::kNoProperties, 1, 0)      \
   V(ChangeTaggedToInt32, Operator::kNoProperties, 1, 0)            \
@@ -749,6 +732,7 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(ChangeCompressedToTaggedSigned, Operator::kNoProperties, 1, 0) \
   V(ChangeTaggedToCompressedSigned, Operator::kNoProperties, 1, 0) \
   V(ChangeFloat64ToTaggedPointer, Operator::kNoProperties, 1, 0)   \
+  V(ChangeInt31ToCompressedSigned, Operator::kNoProperties, 1, 0)  \
   V(ChangeInt31ToTaggedSigned, Operator::kNoProperties, 1, 0)      \
   V(ChangeInt32ToTagged, Operator::kNoProperties, 1, 0)            \
   V(ChangeInt64ToTagged, Operator::kNoProperties, 1, 0)            \
@@ -798,6 +782,7 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(PoisonIndex, Operator::kNoProperties, 1, 0)
 
 #define EFFECT_DEPENDENT_OP_LIST(V)                       \
+  V(BigIntAdd, Operator::kNoProperties, 2, 1)             \
   V(StringCharCodeAt, Operator::kNoProperties, 2, 1)      \
   V(StringCodePointAt, Operator::kNoProperties, 2, 1)     \
   V(StringFromCodePointAt, Operator::kNoProperties, 2, 1) \
@@ -832,6 +817,7 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(CheckSmi, 1, 1)                         \
   V(CheckString, 1, 1)                      \
   V(CheckBigInt, 1, 1)                      \
+  V(CheckedInt32ToCompressedSigned, 1, 1)   \
   V(CheckedInt32ToTaggedSigned, 1, 1)       \
   V(CheckedInt64ToInt32, 1, 1)              \
   V(CheckedInt64ToTaggedSigned, 1, 1)       \
@@ -1248,6 +1234,13 @@ const Operator* SimplifiedOperatorBuilder::BigIntAsUintN(int bits) {
                                      "BigIntAsUintN", 1, 0, 0, 1, 0, 0, bits);
 }
 
+const Operator* SimplifiedOperatorBuilder::AssertType(Type type) {
+  DCHECK(type.IsRange());
+  return new (zone()) Operator1<Type>(IrOpcode::kAssertType,
+                                      Operator::kNoThrow | Operator::kNoDeopt,
+                                      "AssertType", 1, 0, 0, 1, 0, 0, type);
+}
+
 const Operator* SimplifiedOperatorBuilder::CheckIf(
     DeoptimizeReason reason, const VectorSlotPair& feedback) {
   if (!feedback.IsValid()) {
@@ -1446,11 +1439,18 @@ const Operator* SimplifiedOperatorBuilder::CheckFloat64Hole(
 }
 
 const Operator* SimplifiedOperatorBuilder::SpeculativeBigIntAdd(
-    BigIntOperationHint hint, const VectorSlotPair& feedback) {
-  return new (zone()) Operator1<BigIntOperationParameters>(
+    BigIntOperationHint hint) {
+  return new (zone()) Operator1<BigIntOperationHint>(
       IrOpcode::kSpeculativeBigIntAdd, Operator::kFoldable | Operator::kNoThrow,
-      "SpeculativeBigIntAdd", 2, 1, 1, 1, 1, 0,
-      BigIntOperationParameters{hint, feedback});
+      "SpeculativeBigIntAdd", 2, 1, 1, 1, 1, 0, hint);
+}
+
+const Operator* SimplifiedOperatorBuilder::SpeculativeBigIntNegate(
+    BigIntOperationHint hint) {
+  return new (zone()) Operator1<BigIntOperationHint>(
+      IrOpcode::kSpeculativeBigIntNegate,
+      Operator::kFoldable | Operator::kNoThrow, "SpeculativeBigIntNegate", 1, 1,
+      1, 1, 1, 0, hint);
 }
 
 const Operator* SimplifiedOperatorBuilder::SpeculativeToNumber(

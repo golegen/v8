@@ -189,7 +189,7 @@ void MacroAssembler::RecordWriteField(Register object, int offset,
     Label ok;
     And(t8, dst, Operand(kPointerSize - 1));
     Branch(&ok, eq, t8, Operand(zero_reg));
-    stop("Unaligned cell in write barrier");
+    stop();
     bind(&ok);
   }
 
@@ -330,8 +330,9 @@ void MacroAssembler::RecordWrite(Register object, Register address,
            Operand(value));
   }
 
-  if (remembered_set_action == OMIT_REMEMBERED_SET &&
-      !FLAG_incremental_marking) {
+  if ((remembered_set_action == OMIT_REMEMBERED_SET &&
+       !FLAG_incremental_marking) ||
+      FLAG_disable_write_barriers) {
     return;
   }
 
@@ -4703,15 +4704,15 @@ void TurboAssembler::Check(Condition cc, AbortReason reason, Register rs,
 void TurboAssembler::Abort(AbortReason reason) {
   Label abort_start;
   bind(&abort_start);
-  const char* msg = GetAbortReason(reason);
 #ifdef DEBUG
+  const char* msg = GetAbortReason(reason);
   RecordComment("Abort message: ");
   RecordComment(msg);
 #endif
 
   // Avoid emitting call to builtin if requested.
   if (trap_on_abort()) {
-    stop(msg);
+    stop();
     return;
   }
 
@@ -4947,7 +4948,7 @@ void MacroAssembler::AssertStackIsAligned() {
       andi(scratch, sp, frame_alignment_mask);
       Branch(&alignment_as_expected, eq, scratch, Operand(zero_reg));
       // Don't use Check here, as it will call Runtime_Abort re-entering here.
-      stop("Unexpected stack alignment");
+      stop();
       bind(&alignment_as_expected);
     }
   }
@@ -5361,7 +5362,7 @@ void TurboAssembler::CallCFunctionHelper(Register function_base,
       Branch(&alignment_as_expected, eq, scratch, Operand(zero_reg));
       // Don't use Check here, as it will call Runtime_Abort possibly
       // re-entering here.
-      stop("Unexpected alignment in CallCFunction");
+      stop();
       bind(&alignment_as_expected);
     }
   }

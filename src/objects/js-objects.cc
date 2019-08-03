@@ -8,6 +8,7 @@
 #include "src/codegen/compiler.h"
 #include "src/date/date.h"
 #include "src/execution/arguments.h"
+#include "src/execution/frames.h"
 #include "src/execution/isolate.h"
 #include "src/handles/handles-inl.h"
 #include "src/handles/maybe-handles.h"
@@ -1093,7 +1094,8 @@ Maybe<bool> SetPropertyWithInterceptorInternal(
 
 Maybe<bool> DefinePropertyWithInterceptorInternal(
     LookupIterator* it, Handle<InterceptorInfo> interceptor,
-    Maybe<ShouldThrow> should_throw, PropertyDescriptor& desc) {
+    Maybe<ShouldThrow> should_throw,
+    PropertyDescriptor& desc) {  // NOLINT(runtime/references)
   Isolate* isolate = it->isolate();
   // Make sure that the top context does not change when doing callbacks or
   // interceptor calls.
@@ -1507,20 +1509,27 @@ namespace {
 
 Maybe<bool> GetPropertyDescriptorWithInterceptor(LookupIterator* it,
                                                  PropertyDescriptor* desc) {
+  Handle<InterceptorInfo> interceptor;
+
   if (it->state() == LookupIterator::ACCESS_CHECK) {
     if (it->HasAccess()) {
       it->Next();
-    } else if (!JSObject::AllCanRead(it) ||
-               it->state() != LookupIterator::INTERCEPTOR) {
-      it->Restart();
-      return Just(false);
+    } else {
+      interceptor = it->GetInterceptorForFailedAccessCheck();
+      if (interceptor.is_null() &&
+          (!JSObject::AllCanRead(it) ||
+           it->state() != LookupIterator::INTERCEPTOR)) {
+        it->Restart();
+        return Just(false);
+      }
     }
   }
 
-  if (it->state() != LookupIterator::INTERCEPTOR) return Just(false);
-
+  if (it->state() == LookupIterator::INTERCEPTOR) {
+    interceptor = it->GetInterceptor();
+  }
+  if (interceptor.is_null()) return Just(false);
   Isolate* isolate = it->isolate();
-  Handle<InterceptorInfo> interceptor = it->GetInterceptor();
   if (interceptor->descriptor().IsUndefined(isolate)) return Just(false);
 
   Handle<Object> result;
@@ -3894,7 +3903,6 @@ Maybe<bool> JSObject::PreventExtensionsWithTransition(
     Handle<Map> new_map = Map::Copy(isolate, handle(object->map(), isolate),
                                     "SlowCopyForPreventExtensions");
     new_map->set_is_extensible(false);
-    DCHECK(!new_map->has_frozen_or_sealed_elements());
     new_element_dictionary = CreateElementDictionary(isolate, object);
     if (!new_element_dictionary.is_null()) {
       ElementsKind new_kind =
@@ -4596,22 +4604,22 @@ static ElementsKind BestFittingFastElementsKind(JSObject object) {
 void JSObject::AddDataElement(Handle<JSObject> object, uint32_t index,
                               Handle<Object> value,
                               PropertyAttributes attributes) {
-  DCHECK(object->map().is_extensible());
-
   Isolate* isolate = object->GetIsolate();
+
+  DCHECK(object->map(isolate).is_extensible());
 
   uint32_t old_length = 0;
   uint32_t new_capacity = 0;
 
-  if (object->IsJSArray()) {
+  if (object->IsJSArray(isolate)) {
     CHECK(JSArray::cast(*object).length().ToArrayLength(&old_length));
   }
 
-  ElementsKind kind = object->GetElementsKind();
-  FixedArrayBase elements = object->elements();
+  ElementsKind kind = object->GetElementsKind(isolate);
+  FixedArrayBase elements = object->elements(isolate);
   ElementsKind dictionary_kind = DICTIONARY_ELEMENTS;
   if (IsSloppyArgumentsElementsKind(kind)) {
-    elements = SloppyArgumentsElements::cast(elements).arguments();
+    elements = SloppyArgumentsElements::cast(elements).arguments(isolate);
     dictionary_kind = SLOW_SLOPPY_ARGUMENTS_ELEMENTS;
   } else if (IsStringWrapperElementsKind(kind)) {
     dictionary_kind = SLOW_STRING_WRAPPER_ELEMENTS;
@@ -4619,7 +4627,7 @@ void JSObject::AddDataElement(Handle<JSObject> object, uint32_t index,
 
   if (attributes != NONE) {
     kind = dictionary_kind;
-  } else if (elements.IsNumberDictionary()) {
+  } else if (elements.IsNumberDictionary(isolate)) {
     kind = ShouldConvertToFastElements(
                *object, NumberDictionary::cast(elements), index, &new_capacity)
                ? BestFittingFastElementsKind(*object)
@@ -4630,8 +4638,9 @@ void JSObject::AddDataElement(Handle<JSObject> object, uint32_t index,
     kind = dictionary_kind;
   }
 
-  ElementsKind to = value->OptimalElementsKind();
-  if (IsHoleyElementsKind(kind) || !object->IsJSArray() || index > old_length) {
+  ElementsKind to = value->OptimalElementsKind(isolate);
+  if (IsHoleyElementsKind(kind) || !object->IsJSArray(isolate) ||
+      index > old_length) {
     to = GetHoleyElementsKind(to);
     kind = GetHoleyElementsKind(kind);
   }
@@ -4639,7 +4648,7 @@ void JSObject::AddDataElement(Handle<JSObject> object, uint32_t index,
   ElementsAccessor* accessor = ElementsAccessor::ForKind(to);
   accessor->Add(object, index, value, attributes, new_capacity);
 
-  if (object->IsJSArray() && index >= old_length) {
+  if (object->IsJSArray(isolate) && index >= old_length) {
     Handle<Object> new_length =
         isolate->factory()->NewNumberFromUint(index + 1);
     JSArray::cast(*object).set_length(*new_length);
@@ -4983,6 +4992,17 @@ void JSFunction::EnsureFeedbackVector(Handle<JSFunction> function) {
 // static
 void JSFunction::InitializeFeedbackCell(Handle<JSFunction> function) {
   Isolate* const isolate = function->GetIsolate();
+
+  if (function->has_feedback_vector()) {
+    // TODO(984344): Make this a CHECK that feedback vectors are identical to
+    // what we expect once we have removed all bytecode generation differences
+    // between eager and lazy compilation. For now just reset if they aren't
+    // identical
+    FeedbackVector vector = function->feedback_vector();
+    if (vector.length() == vector.metadata().slot_count()) return;
+    function->raw_feedback_cell().reset();
+  }
+
   bool needs_feedback_vector = !FLAG_lazy_feedback_allocation;
   // We need feedback vector for certain log events, collecting type profile
   // and more precise code coverage.
@@ -5182,6 +5202,7 @@ bool CanSubclassHaveInobjectProperties(InstanceType instance_type) {
     case JS_MESSAGE_OBJECT_TYPE:
     case JS_OBJECT_TYPE:
     case JS_ERROR_TYPE:
+    case JS_FINALIZATION_GROUP_TYPE:
     case JS_ARGUMENTS_TYPE:
     case JS_PROMISE_TYPE:
     case JS_REGEXP_TYPE:
@@ -5190,6 +5211,7 @@ bool CanSubclassHaveInobjectProperties(InstanceType instance_type) {
     case JS_TYPED_ARRAY_TYPE:
     case JS_PRIMITIVE_WRAPPER_TYPE:
     case JS_WEAK_MAP_TYPE:
+    case JS_WEAK_REF_TYPE:
     case JS_WEAK_SET_TYPE:
     case WASM_GLOBAL_TYPE:
     case WASM_INSTANCE_TYPE:

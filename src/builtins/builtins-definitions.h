@@ -170,7 +170,9 @@ namespace internal {
                                                                                \
   /* Adapters for Turbofan into runtime */                                     \
   TFC(AllocateInYoungGeneration, Allocate)                                     \
+  TFC(AllocateRegularInYoungGeneration, Allocate)                              \
   TFC(AllocateInOldGeneration, Allocate)                                       \
+  TFC(AllocateRegularInOldGeneration, Allocate)                                \
                                                                                \
   /* TurboFan support builtins */                                              \
   TFS(CopyFastSmiOrObjectElements, kObject)                                    \
@@ -266,7 +268,7 @@ namespace internal {
                                                                                \
   /* Abort */                                                                  \
   TFC(Abort, Abort)                                                            \
-  TFC(AbortJS, Abort)                                                          \
+  TFC(AbortCSAAssert, Abort)                                                   \
                                                                                \
   /* Built-in functions for Javascript */                                      \
   /* Special internal builtins */                                              \
@@ -819,8 +821,6 @@ namespace internal {
   ASM(ReflectApply, Dummy)                                                     \
   ASM(ReflectConstruct, Dummy)                                                 \
   CPP(ReflectDefineProperty)                                                   \
-  CPP(ReflectDeleteProperty)                                                   \
-  CPP(ReflectGet)                                                              \
   CPP(ReflectGetOwnPropertyDescriptor)                                         \
   TFJ(ReflectHas, 2, kReceiver, kTarget, kKey)                                 \
   CPP(ReflectOwnKeys)                                                          \

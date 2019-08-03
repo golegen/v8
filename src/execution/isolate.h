@@ -91,8 +91,8 @@ class RootVisitor;
 class RuntimeProfiler;
 class SetupIsolateDelegate;
 class Simulator;
-class StartupDeserializer;
 class StandardFrame;
+class StartupDeserializer;
 class StubCache;
 class ThreadManager;
 class ThreadState;
@@ -1176,7 +1176,8 @@ class Isolate final : private HiddenFactory {
 
   inline bool IsArraySpeciesLookupChainIntact();
   inline bool IsTypedArraySpeciesLookupChainIntact();
-  inline bool IsRegExpSpeciesLookupChainIntact();
+  inline bool IsRegExpSpeciesLookupChainIntact(
+      Handle<NativeContext> native_context);
 
   // Check that the @@species protector is intact, which guards the lookup of
   // "constructor" on JSPromise instances, whose [[Prototype]] is the initial
@@ -1258,10 +1259,14 @@ class Isolate final : private HiddenFactory {
   void UpdateNoElementsProtectorOnNormalizeElements(Handle<JSObject> object) {
     UpdateNoElementsProtectorOnSetElement(object);
   }
+
+  // The `protector_name` C string must be statically allocated.
+  void TraceProtectorInvalidation(const char* protector_name);
+
   void InvalidateArrayConstructorProtector();
   void InvalidateArraySpeciesProtector();
   void InvalidateTypedArraySpeciesProtector();
-  void InvalidateRegExpSpeciesProtector();
+  void InvalidateRegExpSpeciesProtector(Handle<NativeContext> native_context);
   void InvalidatePromiseSpeciesProtector();
   void InvalidateIsConcatSpreadableProtector();
   void InvalidateStringLengthOverflowProtector();
@@ -1403,6 +1408,8 @@ class Isolate final : private HiddenFactory {
   void AddDetachedContext(Handle<Context> context);
   void CheckDetachedContextsAfterGC();
 
+  void AddSharedWasmMemory(Handle<WasmMemoryObject> memory_object);
+
   std::vector<Object>* partial_snapshot_cache() {
     return &partial_snapshot_cache_;
   }
@@ -1468,6 +1475,11 @@ class Isolate final : private HiddenFactory {
 
   bool IsInAnyContext(Object object, uint32_t index);
 
+  void ClearKeptObjects();
+  void SetHostCleanupFinalizationGroupCallback(
+      HostCleanupFinalizationGroupCallback callback);
+  void RunHostCleanupFinalizationGroupCallback(Handle<JSFinalizationGroup> fg);
+
   void SetHostImportModuleDynamicallyCallback(
       HostImportModuleDynamicallyCallback callback);
   V8_EXPORT_PRIVATE MaybeHandle<JSPromise>
@@ -1492,11 +1504,11 @@ class Isolate final : private HiddenFactory {
   // annotate the builtin blob with debugging information.
   void PrepareBuiltinSourcePositionMap();
 
-#if defined(V8_OS_WIN_X64)
+#if defined(V8_OS_WIN64)
   void SetBuiltinUnwindData(
       int builtin_index,
       const win64_unwindinfo::BuiltinUnwindInfo& unwinding_info);
-#endif
+#endif  // V8_OS_WIN64
 
   void SetPrepareStackTraceCallback(PrepareStackTraceCallback callback);
   MaybeHandle<Object> RunPrepareStackTraceCallback(Handle<Context>,
@@ -1705,6 +1717,8 @@ class Isolate final : private HiddenFactory {
   v8::Isolate::AtomicsWaitCallback atomics_wait_callback_ = nullptr;
   void* atomics_wait_callback_data_ = nullptr;
   PromiseHook promise_hook_ = nullptr;
+  HostCleanupFinalizationGroupCallback
+      host_cleanup_finalization_group_callback_ = nullptr;
   HostImportModuleDynamicallyCallback host_import_module_dynamically_callback_ =
       nullptr;
   HostInitializeImportMetaObjectCallback

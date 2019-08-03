@@ -246,6 +246,17 @@ MachineType AtomicOpType(Operator const* op) {
   V(Word32PairShr, Operator::kNoProperties, 3, 0, 2)                          \
   V(Word32PairSar, Operator::kNoProperties, 3, 0, 2)                          \
   V(F64x2Splat, Operator::kNoProperties, 1, 0, 1)                             \
+  V(F64x2Abs, Operator::kNoProperties, 1, 0, 1)                               \
+  V(F64x2Neg, Operator::kNoProperties, 1, 0, 1)                               \
+  V(F64x2Add, Operator::kCommutative, 2, 0, 1)                                \
+  V(F64x2Sub, Operator::kNoProperties, 2, 0, 1)                               \
+  V(F64x2Mul, Operator::kCommutative, 2, 0, 1)                                \
+  V(F64x2Min, Operator::kCommutative, 2, 0, 1)                                \
+  V(F64x2Max, Operator::kCommutative, 2, 0, 1)                                \
+  V(F64x2Eq, Operator::kCommutative, 2, 0, 1)                                 \
+  V(F64x2Ne, Operator::kCommutative, 2, 0, 1)                                 \
+  V(F64x2Lt, Operator::kNoProperties, 2, 0, 1)                                \
+  V(F64x2Le, Operator::kNoProperties, 2, 0, 1)                                \
   V(F32x4Splat, Operator::kNoProperties, 1, 0, 1)                             \
   V(F32x4SConvertI32x4, Operator::kNoProperties, 1, 0, 1)                     \
   V(F32x4UConvertI32x4, Operator::kNoProperties, 1, 0, 1)                     \
@@ -265,15 +276,29 @@ MachineType AtomicOpType(Operator const* op) {
   V(F32x4Le, Operator::kNoProperties, 2, 0, 1)                                \
   V(I64x2Splat, Operator::kNoProperties, 1, 0, 1)                             \
   V(I64x2Neg, Operator::kNoProperties, 1, 0, 1)                               \
+  V(I64x2Shl, Operator::kNoProperties, 2, 0, 1)                               \
+  V(I64x2ShrS, Operator::kNoProperties, 2, 0, 1)                              \
   V(I64x2Add, Operator::kCommutative, 2, 0, 1)                                \
   V(I64x2Sub, Operator::kNoProperties, 2, 0, 1)                               \
+  V(I64x2Mul, Operator::kCommutative, 2, 0, 1)                                \
+  V(I64x2MinS, Operator::kCommutative, 2, 0, 1)                               \
+  V(I64x2MaxS, Operator::kCommutative, 2, 0, 1)                               \
   V(I64x2Eq, Operator::kCommutative, 2, 0, 1)                                 \
   V(I64x2Ne, Operator::kCommutative, 2, 0, 1)                                 \
+  V(I64x2GtS, Operator::kNoProperties, 2, 0, 1)                               \
+  V(I64x2GeS, Operator::kNoProperties, 2, 0, 1)                               \
+  V(I64x2ShrU, Operator::kNoProperties, 2, 0, 1)                              \
+  V(I64x2MinU, Operator::kCommutative, 2, 0, 1)                               \
+  V(I64x2MaxU, Operator::kCommutative, 2, 0, 1)                               \
+  V(I64x2GtU, Operator::kNoProperties, 2, 0, 1)                               \
+  V(I64x2GeU, Operator::kNoProperties, 2, 0, 1)                               \
   V(I32x4Splat, Operator::kNoProperties, 1, 0, 1)                             \
   V(I32x4SConvertF32x4, Operator::kNoProperties, 1, 0, 1)                     \
   V(I32x4SConvertI16x8Low, Operator::kNoProperties, 1, 0, 1)                  \
   V(I32x4SConvertI16x8High, Operator::kNoProperties, 1, 0, 1)                 \
   V(I32x4Neg, Operator::kNoProperties, 1, 0, 1)                               \
+  V(I32x4Shl, Operator::kNoProperties, 2, 0, 1)                               \
+  V(I32x4ShrS, Operator::kNoProperties, 2, 0, 1)                              \
   V(I32x4Add, Operator::kCommutative, 2, 0, 1)                                \
   V(I32x4AddHoriz, Operator::kNoProperties, 2, 0, 1)                          \
   V(I32x4Sub, Operator::kNoProperties, 2, 0, 1)                               \
@@ -287,6 +312,7 @@ MachineType AtomicOpType(Operator const* op) {
   V(I32x4UConvertF32x4, Operator::kNoProperties, 1, 0, 1)                     \
   V(I32x4UConvertI16x8Low, Operator::kNoProperties, 1, 0, 1)                  \
   V(I32x4UConvertI16x8High, Operator::kNoProperties, 1, 0, 1)                 \
+  V(I32x4ShrU, Operator::kNoProperties, 2, 0, 1)                              \
   V(I32x4MinU, Operator::kCommutative, 2, 0, 1)                               \
   V(I32x4MaxU, Operator::kCommutative, 2, 0, 1)                               \
   V(I32x4GtU, Operator::kNoProperties, 2, 0, 1)                               \
@@ -295,6 +321,8 @@ MachineType AtomicOpType(Operator const* op) {
   V(I16x8SConvertI8x16Low, Operator::kNoProperties, 1, 0, 1)                  \
   V(I16x8SConvertI8x16High, Operator::kNoProperties, 1, 0, 1)                 \
   V(I16x8Neg, Operator::kNoProperties, 1, 0, 1)                               \
+  V(I16x8Shl, Operator::kNoProperties, 2, 0, 1)                               \
+  V(I16x8ShrS, Operator::kNoProperties, 2, 0, 1)                              \
   V(I16x8SConvertI32x4, Operator::kNoProperties, 2, 0, 1)                     \
   V(I16x8Add, Operator::kCommutative, 2, 0, 1)                                \
   V(I16x8AddSaturateS, Operator::kCommutative, 2, 0, 1)                       \
@@ -310,6 +338,7 @@ MachineType AtomicOpType(Operator const* op) {
   V(I16x8GeS, Operator::kNoProperties, 2, 0, 1)                               \
   V(I16x8UConvertI8x16Low, Operator::kNoProperties, 1, 0, 1)                  \
   V(I16x8UConvertI8x16High, Operator::kNoProperties, 1, 0, 1)                 \
+  V(I16x8ShrU, Operator::kNoProperties, 2, 0, 1)                              \
   V(I16x8UConvertI32x4, Operator::kNoProperties, 2, 0, 1)                     \
   V(I16x8AddSaturateU, Operator::kCommutative, 2, 0, 1)                       \
   V(I16x8SubSaturateU, Operator::kNoProperties, 2, 0, 1)                      \
@@ -319,6 +348,8 @@ MachineType AtomicOpType(Operator const* op) {
   V(I16x8GeU, Operator::kNoProperties, 2, 0, 1)                               \
   V(I8x16Splat, Operator::kNoProperties, 1, 0, 1)                             \
   V(I8x16Neg, Operator::kNoProperties, 1, 0, 1)                               \
+  V(I8x16Shl, Operator::kNoProperties, 2, 0, 1)                               \
+  V(I8x16ShrS, Operator::kNoProperties, 2, 0, 1)                              \
   V(I8x16SConvertI16x8, Operator::kNoProperties, 2, 0, 1)                     \
   V(I8x16Add, Operator::kCommutative, 2, 0, 1)                                \
   V(I8x16AddSaturateS, Operator::kCommutative, 2, 0, 1)                       \
@@ -331,6 +362,7 @@ MachineType AtomicOpType(Operator const* op) {
   V(I8x16Ne, Operator::kCommutative, 2, 0, 1)                                 \
   V(I8x16GtS, Operator::kNoProperties, 2, 0, 1)                               \
   V(I8x16GeS, Operator::kNoProperties, 2, 0, 1)                               \
+  V(I8x16ShrU, Operator::kNoProperties, 2, 0, 1)                              \
   V(I8x16UConvertI16x8, Operator::kNoProperties, 2, 0, 1)                     \
   V(I8x16AddSaturateU, Operator::kCommutative, 2, 0, 1)                       \
   V(I8x16SubSaturateU, Operator::kNoProperties, 2, 0, 1)                      \
@@ -346,6 +378,8 @@ MachineType AtomicOpType(Operator const* op) {
   V(S128Xor, Operator::kAssociative | Operator::kCommutative, 2, 0, 1)        \
   V(S128Not, Operator::kNoProperties, 1, 0, 1)                                \
   V(S128Select, Operator::kNoProperties, 3, 0, 1)                             \
+  V(S1x2AnyTrue, Operator::kNoProperties, 1, 0, 1)                            \
+  V(S1x2AllTrue, Operator::kNoProperties, 1, 0, 1)                            \
   V(S1x4AnyTrue, Operator::kNoProperties, 1, 0, 1)                            \
   V(S1x4AllTrue, Operator::kNoProperties, 1, 0, 1)                            \
   V(S1x8AnyTrue, Operator::kNoProperties, 1, 0, 1)                            \
@@ -447,17 +481,12 @@ MachineType AtomicOpType(Operator const* op) {
   V(Exchange)
 
 #define SIMD_LANE_OP_LIST(V) \
+  V(F64x2, 2)                \
   V(F32x4, 4)                \
   V(I64x2, 2)                \
   V(I32x4, 4)                \
   V(I16x8, 8)                \
   V(I8x16, 16)
-
-#define SIMD_FORMAT_LIST(V) \
-  V(64x2, 64)               \
-  V(32x4, 32)               \
-  V(16x8, 16)               \
-  V(8x16, 8)
 
 #define STACK_SLOT_CACHED_SIZES_ALIGNMENTS_LIST(V) \
   V(4, 0) V(8, 0) V(16, 0) V(4, 4) V(8, 8) V(16, 16)
@@ -764,6 +793,14 @@ struct MachineOperatorGlobalCache {
   };
   Word32AtomicPairCompareExchangeOperator kWord32AtomicPairCompareExchange;
 
+  struct MemoryBarrierOperator : public Operator {
+    MemoryBarrierOperator()
+        : Operator(IrOpcode::kMemoryBarrier,
+                   Operator::kNoDeopt | Operator::kNoThrow, "MemoryBarrier", 0,
+                   1, 1, 0, 1, 0) {}
+  };
+  MemoryBarrierOperator kMemoryBarrier;
+
   // The {BitcastWordToTagged} operator must not be marked as pure (especially
   // not idempotent), because otherwise the splitting logic in the Scheduler
   // might decide to split these operators, thus potentially creating live
@@ -817,12 +854,12 @@ struct MachineOperatorGlobalCache {
   };
   Word64PoisonOnSpeculation kWord64PoisonOnSpeculation;
 
-  struct DebugAbortOperator : public Operator {
-    DebugAbortOperator()
-        : Operator(IrOpcode::kDebugAbort, Operator::kNoThrow, "DebugAbort", 1,
-                   1, 1, 0, 1, 0) {}
+  struct AbortCSAAssertOperator : public Operator {
+    AbortCSAAssertOperator()
+        : Operator(IrOpcode::kAbortCSAAssert, Operator::kNoThrow,
+                   "AbortCSAAssert", 1, 1, 1, 0, 1, 0) {}
   };
-  DebugAbortOperator kDebugAbort;
+  AbortCSAAssertOperator kAbortCSAAssert;
 
   struct DebugBreakOperator : public Operator {
     DebugBreakOperator()
@@ -1015,8 +1052,8 @@ const Operator* MachineOperatorBuilder::BitcastMaybeObjectToWord() {
   return &cache_.kBitcastMaybeObjectToWord;
 }
 
-const Operator* MachineOperatorBuilder::DebugAbort() {
-  return &cache_.kDebugAbort;
+const Operator* MachineOperatorBuilder::AbortCSAAssert() {
+  return &cache_.kAbortCSAAssert;
 }
 
 const Operator* MachineOperatorBuilder::DebugBreak() {
@@ -1025,6 +1062,10 @@ const Operator* MachineOperatorBuilder::DebugBreak() {
 
 const Operator* MachineOperatorBuilder::Comment(const char* msg) {
   return new (zone_) CommentOperator(msg);
+}
+
+const Operator* MachineOperatorBuilder::MemBarrier() {
+  return &cache_.kMemoryBarrier;
 }
 
 const Operator* MachineOperatorBuilder::Word32AtomicLoad(
@@ -1279,28 +1320,6 @@ const Operator* MachineOperatorBuilder::Word64PoisonOnSpeculation() {
 SIMD_LANE_OP_LIST(SIMD_LANE_OPS)
 #undef SIMD_LANE_OPS
 
-#define SIMD_SHIFT_OPS(format, bits)                                           \
-  const Operator* MachineOperatorBuilder::I##format##Shl(int32_t shift) {      \
-    DCHECK(0 <= shift && shift < bits);                                        \
-    return new (zone_)                                                         \
-        Operator1<int32_t>(IrOpcode::kI##format##Shl, Operator::kPure,         \
-                           "Shift left", 1, 0, 0, 1, 0, 0, shift);             \
-  }                                                                            \
-  const Operator* MachineOperatorBuilder::I##format##ShrS(int32_t shift) {     \
-    DCHECK(0 < shift && shift <= bits);                                        \
-    return new (zone_)                                                         \
-        Operator1<int32_t>(IrOpcode::kI##format##ShrS, Operator::kPure,        \
-                           "Arithmetic shift right", 1, 0, 0, 1, 0, 0, shift); \
-  }                                                                            \
-  const Operator* MachineOperatorBuilder::I##format##ShrU(int32_t shift) {     \
-    DCHECK(0 <= shift && shift < bits);                                        \
-    return new (zone_)                                                         \
-        Operator1<int32_t>(IrOpcode::kI##format##ShrU, Operator::kPure,        \
-                           "Shift right", 1, 0, 0, 1, 0, 0, shift);            \
-  }
-SIMD_FORMAT_LIST(SIMD_SHIFT_OPS)
-#undef SIMD_SHIFT_OPS
-
 const Operator* MachineOperatorBuilder::S8x16Shuffle(
     const uint8_t shuffle[16]) {
   uint8_t* array = zone_->NewArray<uint8_t>(16);
@@ -1328,7 +1347,6 @@ const uint8_t* S8x16ShuffleOf(Operator const* op) {
 #undef ATOMIC_REPRESENTATION_LIST
 #undef ATOMIC64_REPRESENTATION_LIST
 #undef SIMD_LANE_OP_LIST
-#undef SIMD_FORMAT_LIST
 #undef STACK_SLOT_CACHED_SIZES_ALIGNMENTS_LIST
 
 }  // namespace compiler

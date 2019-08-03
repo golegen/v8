@@ -973,4 +973,63 @@ namespace test {
     return 1;
   }
 
+  struct SBox<T: type> {
+    value: T;
+  }
+
+  @export
+  macro TestGenericStruct1(): intptr {
+    const i: intptr = 123;
+    let box = SBox{value: i};
+    let boxbox: SBox<SBox<intptr>> = SBox{value: box};
+    check(box.value == 123);
+    boxbox.value.value *= 2;
+    check(boxbox.value.value == 246);
+    return boxbox.value.value;
+  }
+
+  struct TestTuple<T1: type, T2: type> {
+    const fst: T1;
+    const snd: T2;
+  }
+
+  macro TupleSwap<T1: type, T2: type>(tuple: TestTuple<T1, T2>):
+      TestTuple<T2, T1> {
+    return TestTuple{fst: tuple.snd, snd: tuple.fst};
+  }
+
+  @export
+  macro TestGenericStruct2():
+      TestTuple<TestTuple<intptr, Smi>, TestTuple<Smi, intptr>> {
+    const intptrAndSmi = TestTuple<intptr, Smi>{fst: 1, snd: 2};
+    const smiAndIntptr = TupleSwap(intptrAndSmi);
+    check(intptrAndSmi.fst == smiAndIntptr.snd);
+    check(intptrAndSmi.snd == smiAndIntptr.fst);
+    const tupleTuple =
+        TestTuple<TestTuple<intptr, Smi>>{fst: intptrAndSmi, snd: smiAndIntptr};
+    return tupleTuple;
+  }
+
+  macro BranchAndWriteResult(x: Smi, box: SmiBox): bool {
+    if (x > 5 || x < 0) {
+      box.value = 1;
+      return true;
+    } else {
+      box.value = 2;
+      return false;
+    }
+  }
+
+  @export
+  macro TestBranchOnBoolOptimization(implicit context: Context)(input: Smi) {
+    const box = NewSmiBox(1);
+    // If the two branches get combined into one, we should be able to determine
+    // the value of {box} statically.
+    if (BranchAndWriteResult(input, box)) {
+      StaticAssert(box.value == 1);
+    } else {
+      StaticAssert(box.value == 2);
+    }
+  }
+
 }
